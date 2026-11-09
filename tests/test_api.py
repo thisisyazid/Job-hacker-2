@@ -134,7 +134,7 @@ def test_csv_import(c):
                 "https://www.linkedin.com/jobs/view/2222222222,Agile Coach,Globex,Remote,2026-04-15,In progress\n"
                 ",,,,,\n")
     r = c.post("/api/import/csv", files={"file": ("jobs.csv", csv_text, "text/csv")}).json()
-    assert r == {"rows": 4, "added": 2, "duplicates": 1, "skipped": 1, "dead": 0}
+    assert r == {"rows": 4, "added": 2, "duplicates": 1, "reposted": 0, "skipped": 1, "dead": 0}
     statuses = {j["title"]: j["status"] for j in c.get("/api/jobs").json()}
     assert statuses["Agile Coach"] == "applied" and statuses["Scrum Master"] == "saved"
 
@@ -377,3 +377,27 @@ def test_csv_bad_files_say_why(c):
     assert "empty" in err(b"  \n")
     assert "Couldn't find a job title column" in err(b"Company,URL\nAcme,https://a.example\n")
     assert "no jobs" in err(b"Job title,URL\n")
+
+
+def test_csv_repost_updates_posted_date(c):
+    first = "Job title,Job URL,Published At\nRepost Role,https://jobs.example.com/repost-1,2026-09-03T00:00:00.000Z\n"
+    assert c.post("/api/import/csv", files={"file": ("a.csv", first, "text/csv")}).json()["added"] == 1
+    job = next(j for j in c.get("/api/jobs").json() if j["title"] == "Repost Role")
+    assert job["posted_date"] == "2026-09-03"
+    # the same link twice more: the newest date wins, whatever order the rows are in
+    later = ("Job title,Job URL,Published At\n"
+             "Repost Role,https://jobs.example.com/repost-1?utm_source=x,2026-11-06T00:00:00.000Z\n"
+             "Repost Role,https://jobs.example.com/repost-1,2026-10-01T00:00:00.000Z\n")
+    r = c.post("/api/import/csv", files={"file": ("b.csv", later, "text/csv")}).json()
+    assert r["added"] == 0 and r["duplicates"] == 2 and r["reposted"] == 1
+    assert c.get(f"/api/jobs/{job['id']}").json()["posted_date"] == "2026-11-06"
+    # an older date never moves it back
+    older = "Job title,Job URL,Published At\nRepost Role,https://jobs.example.com/repost-1,2026-08-01\n"
+    assert c.post("/api/import/csv", files={"file": ("c.csv", older, "text/csv")}).json()["reposted"] == 0
+    assert c.get(f"/api/jobs/{job['id']}").json()["posted_date"] == "2026-11-06"
+    # a new job listed twice in one file is saved once, with the newer date
+    twice = ("Job title,Job URL,Published At\nTwice Role,https://jobs.example.com/twice,2026-10-01\n"
+             "Twice Role,https://jobs.example.com/twice,2026-10-20\n")
+    r = c.post("/api/import/csv", files={"file": ("d.csv", twice, "text/csv")}).json()
+    assert r["added"] == 1 and r["reposted"] == 0
+    assert next(j for j in c.get("/api/jobs").json() if j["title"] == "Twice Role")["posted_date"] == "2026-10-20"

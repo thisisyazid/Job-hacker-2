@@ -16,6 +16,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from . import ai, auth, config, logs, nightly
+from .dates import is_iso, normalize as normalize_date
 from .db import STATUSES, Document, Job, NightlyRun, Persona, User, get_db, init_db, now
 from .docx_export import to_docx
 from .scrape import ScrapeError, fetch_job, looks_like_url, normalize_url
@@ -794,7 +795,20 @@ async def import_csv(file: UploadFile = File(...), user: User = Depends(current_
         return ""
 
     log.info("CSV import into profile %r: %d rows", user.name, len(rows))
-    added = dupes = invalid = dead = 0
+    POSTED = ("published at", "posted", "posted date", "date posted", "date")
+
+    # A job that's reposted keeps its link, so it can appear more than once.
+    # Find the newest posted date for each link across the whole file.
+    today = now()
+    newest: dict[str, str] = {}
+    for row in rows:
+        u = normalize_url(col(row, *URL_COLS))
+        d = normalize_date(col(row, *POSTED), today)
+        if u and is_iso(d) and d > newest.get(u, ""):
+            newest[u] = d
+
+    added = dupes = invalid = dead = redated = 0
+    redated_ids: set[int] = set()
     for n, row in enumerate(rows, start=2):  # line 1 is the header
         raw_url = col(row, *URL_COLS)
         url = normalize_url(raw_url)
@@ -812,12 +826,21 @@ async def import_csv(file: UploadFile = File(...), user: User = Depends(current_
         dupe = find_dupe(db, user, url)
         if dupe:
             dupes += 1
-            log.info("  %s -> already saved as job %s (%r, stage %s, saved %s)", what, dupe.id,
-                     logs.short(dupe.title, 60), dupe.status, dupe.created_at.date() if dupe.created_at else "?")
+            latest = newest.get(url, "")
+            old = dupe.posted_date or ""
+            if latest and (not is_iso(old) or latest > old) and dupe.id not in redated_ids:
+                dupe.posted_date = latest
+                redated_ids.add(dupe.id)
+                redated += 1
+                log.info("  %s -> already saved as job %s (%r, stage %s); reposted, posted date %s -> %s", what,
+                         dupe.id, logs.short(dupe.title, 60), dupe.status, old or "(none)", latest)
+            else:
+                log.info("  %s -> already saved as job %s (%r, stage %s, posted %s)", what, dupe.id,
+                         logs.short(dupe.title, 60), dupe.status, old or "(none)")
             continue
         job = Job(user_id=user.id, url=url or None, title=title,
                    company="" if looks_like_url(company) else company, location=col(row, "location"),
-                   posted_date=col(row, "published at", "posted", "date"),
+                   posted_date=newest.get(url) or col(row, *POSTED),
                    description=col(row, "description", "job description"),
                    status=_map_status(col(row, "status")), source="csv")
         db.add(job)
@@ -825,9 +848,9 @@ async def import_csv(file: UploadFile = File(...), user: User = Depends(current_
         added += 1
         log.info("  %s -> added as job %s (stage %s)", what, job.id, job.status)
     db.commit()
-    log.info("CSV import done: %d rows, %d added, %d already saved, %d without a title, %d taken down",
-             len(rows), added, dupes, invalid, dead)
-    return {"rows": len(rows), "added": added, "duplicates": dupes, "skipped": invalid, "dead": dead}
+    log.info("CSV import done: %d rows, %d added, %d already saved (%d of them reposted, date updated), "
+             "%d without a title, %d taken down", len(rows), added, dupes, redated, invalid, dead)
+    return {"rows": len(rows), "added": added, "duplicates": dupes, "reposted": redated, "skipped": invalid, "dead": dead}
 
 
 @app.get("/api/export")

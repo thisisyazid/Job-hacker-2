@@ -1138,7 +1138,7 @@ async function renderSettings(params) {
       <p class="lead">On iPhone, make a Shortcut that opens <code>${origin}/?add=</code> followed by the shared URL, and turn on “Show in Share Sheet”.</p>
 
       <h2>Backup and import</h2>
-      <p class="lead">Download everything as one file, or bring in a backup or the export from the old tracker. Jobs already saved (same link) are skipped.</p>
+      <p class="lead">Download everything as one file, or bring in a backup or the export from the old tracker. Jobs already saved (same link) are skipped; if a CSV shows one was reposted, its posted date moves to the newest date in the file.</p>
       <div class="actions">
         <a class="btn" href="/api/export" download>Download backup</a>
         <label class="btn" style="margin:0">Import backup<input type="file" id="imp-json" accept=".json,application/json" hidden></label>
@@ -1211,6 +1211,7 @@ function importSummary(r) {
   const added = r.jobs ?? r.added ?? 0;
   const parts = [`Imported ${added} job${added === 1 ? "" : "s"}`];
   if (r.duplicates) parts.push(`${r.duplicates} already saved`);
+  if (r.reposted) parts.push(`${r.reposted} reposted (posted date updated)`);
   if (r.dead) parts.push(`${r.dead} taken down left out`);
   if (r.skipped) parts.push(`${r.skipped} without a title skipped`);
   return parts.join(", ") + ". Each row is listed in today's log (Settings → Log files).";
