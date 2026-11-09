@@ -18,6 +18,7 @@
   --st-interviewing: #0B8466;
   --st-offer: #C27C12;
   --st-closed: #BCC4CA;
+  --repost: #8A3FD1;
 
   --fit-high: #0B8466;
   --fit-mid: #C27C12;
@@ -52,6 +53,7 @@
     --st-interviewing: #38C59E;
     --st-offer: #F0B44C;
     --st-closed: #4A565F;
+    --repost: #C49BFF;
     --fit-high: #38C59E;
     --fit-mid: #F0B44C;
     --fit-low: #6B7780;
@@ -248,6 +250,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .c-tn input:disabled { cursor: not-allowed; opacity: .35; }
 .sheet thead th.c-tn button { justify-content: center; }
 .stage-tn { --c: var(--accent); }
+.stage-rp { --c: var(--repost); }
 .tonight-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px;
   padding: 6px 6px 6px 14px; margin: 0 0 10px; background: var(--accent-soft); border-radius: var(--radius-m); }
 .tn-sum { margin: 0; font-size: 16px; }
@@ -275,6 +278,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .flag { display: inline-block; font-size: 13px; font-weight: 700; padding: 1px 7px; border-radius: 5px; margin: 2px 4px 0 0; white-space: nowrap; }
 .flag.ok { color: var(--st-interviewing); background: color-mix(in srgb, var(--st-interviewing) 13%, transparent); }
 .flag.night { color: var(--accent); background: var(--accent-soft); }
+.flag.rp { color: var(--repost); background: color-mix(in srgb, var(--repost) 13%, transparent); }
 .flag.warn { color: var(--st-offer); background: color-mix(in srgb, var(--st-offer) 13%, transparent); }
 .fitn { display: inline-grid; place-items: center; min-width: 28px; height: 24px; padding: 0 6px; border-radius: 6px;
   font: 750 15px/1 var(--font-head); font-variant-numeric: tabular-nums; color: var(--surface); background: var(--fc); }

@@ -8,6 +8,7 @@ All features degrade gracefully when neither is available — the UI hides them.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 
@@ -15,6 +16,7 @@ import httpx
 
 from . import config
 
+log = logging.getLogger("jobhacker.ai")
 ENGINES = ("claude", "local")
 _client = None
 _local_cache: dict = {"at": 0.0, "status": None}
@@ -152,9 +154,14 @@ def _ask_local(system: str, user: str, max_tokens: int, json_mode: bool) -> str:
 
 def _ask(system: str, user: str, max_tokens: int = 2000, engine: str | None = None, json_mode: bool = False) -> str:
     e = resolve(engine)
-    if e == "local":
-        return _ask_local(system, user, max_tokens, json_mode)
-    return _ask_claude(system, user, max_tokens)
+    t0 = time.monotonic()
+    try:
+        out = _ask_local(system, user, max_tokens, json_mode) if e == "local" else _ask_claude(system, user, max_tokens)
+    except AIError as err:
+        log.warning("AI call (%s) failed after %.1fs: %s", label(e), time.monotonic() - t0, err)
+        raise
+    log.info("AI call (%s): %.1fs, %d chars in, %d chars out", label(e), time.monotonic() - t0, len(user), len(out))
+    return out
 
 
 def _json(text: str) -> dict:

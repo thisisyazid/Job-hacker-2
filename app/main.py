@@ -5,6 +5,7 @@ import datetime as dt
 import io
 import json
 import re
+import time
 from typing import Optional
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
@@ -14,17 +15,21 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from . import ai, auth, config, nightly
+from . import ai, auth, config, logs, nightly
+from .dates import is_iso, normalize as normalize_date
 from .db import STATUSES, Document, Job, NightlyRun, Persona, User, get_db, init_db, now
 from .docx_export import to_docx
 from .scrape import ScrapeError, fetch_job, looks_like_url, normalize_url
 
+logs.setup()
+log = logs.log
 app = FastAPI(title="Job Hacker", docs_url="/api/docs", openapi_url="/api/openapi.json")
 init_db()
 
 
 @app.on_event("startup")
 def _start_background():
+    log.info("app started (data in %s)", config.DATA_DIR)
     nightly.start_scheduler()
 
 OPEN_PATHS = {"/api/login", "/api/session", "/api/health", "/api/logout"}
@@ -35,7 +40,20 @@ async def guard(request: Request, call_next):
     path = request.url.path
     if path.startswith("/api/") and path not in OPEN_PATHS and not auth.is_authed(request):
         return JSONResponse({"detail": "Log in to continue."}, status_code=401)
-    return await call_next(request)
+    if not path.startswith("/api/"):
+        return await call_next(request)
+    t0 = time.monotonic()
+    try:
+        resp = await call_next(request)
+    except Exception:
+        log.exception("%s %s crashed", request.method, path)
+        return JSONResponse({"detail": "Something went wrong. Details are in today's log file (Settings → Log files)."},
+                            status_code=500)
+    ms = int((time.monotonic() - t0) * 1000)
+    # Changes, errors and slow calls are worth a line; routine reads aren't.
+    if request.method != "GET" or resp.status_code >= 400 or ms > 5000:
+        log.info("%s %s -> %s (%d ms)", request.method, path, resp.status_code, ms)
+    return resp
 
 
 # ---------- helpers ----------
@@ -83,7 +101,7 @@ def job_out(j: Job, full: bool = True) -> dict:
         "id": j.id, "url": j.url, "title": j.title, "company": j.company, "location": j.location,
         "salary": j.salary, "employment_type": j.employment_type, "posted_date": j.posted_date,
         "source": j.source, "status": j.status, "tags": j.tags, "fit_score": j.fit_score,
-        "queued": bool(j.queued),
+        "queued": bool(j.queued), "reposted_at": iso(j.reposted_at), "first_posted": j.first_posted or "",
         "applied_at": iso(j.applied_at), "created_at": iso(j.created_at), "updated_at": iso(j.updated_at),
         "has_description": bool(j.description and j.description.strip()),
     }
@@ -352,12 +370,15 @@ def extract_url(body: UrlIn, user: User = Depends(current_user), db: Session = D
         raise HTTPException(400, "Paste a link to a job posting.")
     dupe = find_dupe(db, user, url)
     if dupe:
+        log.info("read link %s: already saved as job %s (%s, %s)", url, dupe.id, logs.short(dupe.title), dupe.status)
         return {"existing_id": dupe.id, "title": dupe.title, "company": dupe.company}
     try:
         draft, method = fetch_job(body.url, engine=_engine_or_none(body.engine))
     except ScrapeError as e:
+        log.info("read link %s: failed: %s", body.url, e)
         return JSONResponse({"needs_manual": True, "reason": str(e), "url": url}, status_code=422)
     draft = _clean_draft(draft)
+    log.info("read link %s: found with %s: %s", url, method, logs.short(draft.get("title")))
     draft["url"] = url
     return {"draft": draft, "method": method}
 
@@ -376,6 +397,7 @@ def extract_text(body: TextIn):
             return {"draft": d, "method": "AI", "engine": ai.label(eng)}
         except ai.AIError as e:
             fallback_reason = str(e)
+            log.warning("read pasted text: AI failed: %s", e)
     else:
         fallback_reason = "AI is off, so only the description was filled in."
     lines = [l.strip() for l in text.splitlines() if l.strip()]
@@ -449,19 +471,23 @@ def job_from_url(body: UrlIn, user: User = Depends(current_user), db: Session = 
         return {"status": "failed", "reason": "That isn't a link.", "url": body.url}
     dupe = find_dupe(db, user, url)
     if dupe:
+        log.info("bulk link %s: already saved as job %s (%s, %s)", url, dupe.id, logs.short(dupe.title), dupe.status)
         return {"status": "duplicate", "url": url, "job": job_out(dupe, full=False)}
     try:
         draft, method = fetch_job(body.url, engine=_engine_or_none(body.engine))
     except ScrapeError as e:
+        log.info("bulk link %s: failed: %s", body.url, e)
         return {"status": "failed", "reason": str(e), "url": url}
     draft = _clean_draft(draft)
     if not draft.get("title"):
+        log.info("bulk link %s: no title on the page", url)
         return {"status": "failed", "reason": "No job title on that page. The job has probably been taken down.", "url": url}
     j = Job(user_id=user.id, url=url, source="bulk", title=draft["title"][:300],
             **{k: draft.get(k) or "" for k in DETAIL_FIELDS})
     db.add(j)
     db.commit()
     db.refresh(j)
+    log.info("bulk link %s: saved as job %s with %s: %s", url, j.id, method, logs.short(j.title))
     return {"status": "added", "url": url, "method": method, "job": job_out(j, full=False)}
 
 
@@ -476,11 +502,13 @@ def refresh_job(job_id: int, body: Optional[EngineIn] = None, user: User = Depen
     try:
         draft, _ = fetch_job(j.url, engine=_engine_or_none(body.engine if body else None))
     except ScrapeError as e:
+        log.info("fill in job %s (%s): failed: %s", j.id, j.url, e)
         return {"status": "failed", "reason": str(e)}
     draft = _clean_draft(draft)
     filled = [k for k in DETAIL_FIELDS if draft.get(k) and not (getattr(j, k) or "").strip()]
     for k in filled:
         setattr(j, k, draft[k])
+    log.info("fill in job %s (%s): %s", j.id, j.url, ", ".join(filled) if filled else "nothing new found")
     if filled:
         db.commit()
         db.refresh(j)
@@ -494,6 +522,7 @@ def cleanup_dead_links(user: User = Depends(current_user), db: Session = Depends
     removed = fixed = 0
     for j in db.query(Job).filter(Job.user_id == user.id).all():
         if looks_like_url(j.title):
+            log.info("removed taken-down job %s: %s", j.id, j.url or logs.short(j.title))
             db.delete(j)
             removed += 1
         elif looks_like_url(j.company):
@@ -539,7 +568,9 @@ def update_job(job_id: int, body: JobPatch, user: User = Depends(current_user), 
 
 @app.delete("/api/jobs/{job_id}")
 def delete_job(job_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    db.delete(own_job(job_id, user, db))
+    j = own_job(job_id, user, db)
+    log.info("deleted job %s: %r at %r %s", j.id, logs.short(j.title, 60), logs.short(j.company, 40), j.url or "")
+    db.delete(j)
     db.commit()
     return {"ok": True}
 
@@ -712,14 +743,49 @@ def _map_status(s: str | None) -> str:
     return OLD_STATUS.get((s or "").strip().lower(), "saved")
 
 
+TITLE_COLS = ("job title", "title", "name", "job name", "position", "role", "job")
+COMPANY_COLS = ("company name", "company", "employer", "organisation", "organization", "hiring organization")
+URL_COLS = ("job url", "url", "link", "job link", "posting url", "job posting url", "apply url")
+
+
+def _csv_fail(filename: str | None, why: str):
+    log.warning("CSV import of %r failed: %s", filename, why)
+    raise HTTPException(400, why)
+
+
+def _read_csv(raw: bytes, filename: str | None) -> list[dict]:
+    """Reads the CSV the way people actually save it: UTF-8 from Notion or
+    Google Sheets, Windows encoding from Excel, commas, semicolons or tabs."""
+    if raw[:2] == b"PK" or raw[:4] == b"\xd0\xcf\x11\xe0":
+        _csv_fail(filename, "That's an Excel file, not a CSV. In Excel use File → Save As → CSV UTF-8, then import that file.")
+    for enc in ("utf-8-sig", "cp1252", "latin-1"):
+        try:
+            text = raw.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    if not text.strip():
+        _csv_fail(filename, "That file is empty.")
+    head = text[:5000]
+    try:
+        delim = csv.Sniffer().sniff(head.split("\n", 1)[0], delimiters=",;\t|").delimiter
+    except csv.Error:
+        delim = ","
+    rows = list(csv.DictReader(io.StringIO(text), delimiter=delim))
+    cols = [k.strip().lower() for k in (rows[0].keys() if rows else csv.DictReader(io.StringIO(text), delimiter=delim).fieldnames or []) if k]
+    log.info("CSV import: file %r read as %s, separated by %r, %d rows, columns: %s",
+             filename, enc, delim, len(rows), ", ".join(cols) or "none")
+    if not any(c in cols for c in TITLE_COLS):
+        _csv_fail(filename, f"Couldn't find a job title column. The file has: {', '.join(cols) or 'no columns'}. "
+                            "Name the column with the job titles “Job title” and import again.")
+    if not rows:
+        _csv_fail(filename, "That file has column names but no jobs under them.")
+    return rows
+
+
 @app.post("/api/import/csv")
 async def import_csv(file: UploadFile = File(...), user: User = Depends(current_user), db: Session = Depends(get_db)):
-    raw = await file.read()
-    try:
-        text = raw.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        raise HTTPException(400, "Save the file as CSV (UTF-8) and try again.")
-    rows = list(csv.DictReader(io.StringIO(text)))
+    rows = _read_csv(await file.read(), file.filename)
 
     def col(row, *names):
         low = {k.strip().lower(): v for k, v in row.items() if k}
@@ -728,29 +794,66 @@ async def import_csv(file: UploadFile = File(...), user: User = Depends(current_
                 return low[n].strip()
         return ""
 
-    added = dupes = invalid = dead = 0
+    log.info("CSV import into profile %r: %d rows", user.name, len(rows))
+    POSTED = ("published at", "posted", "posted date", "date posted", "date")
+
+    # A job that's reposted keeps its link, so it can appear more than once.
+    # Find the newest posted date for each link across the whole file.
+    today = now()
+    newest: dict[str, str] = {}
     for row in rows:
-        url = normalize_url(col(row, "job url", "url", "link"))
-        title = col(row, "job title", "title")
+        u = normalize_url(col(row, *URL_COLS))
+        d = normalize_date(col(row, *POSTED), today)
+        if u and is_iso(d) and d > newest.get(u, ""):
+            newest[u] = d
+
+    added = dupes = invalid = dead = redated = 0
+    redated_ids: set[int] = set()
+    for n, row in enumerate(rows, start=2):  # line 1 is the header
+        raw_url = col(row, *URL_COLS)
+        url = normalize_url(raw_url)
+        title = col(row, *TITLE_COLS)
+        company = col(row, *COMPANY_COLS)
+        what = f"line {n}: {logs.short(title, 60)!r} at {logs.short(company, 40)!r} {url or '(no link)'}"
         if not title:
             invalid += 1
+            log.info("  %s -> skipped, no job title", what)
             continue
         if looks_like_url(title):
             dead += 1
+            log.info("  %s -> left out, title is a link (posting taken down)", what)
             continue
-        if find_dupe(db, user, url):
+        dupe = find_dupe(db, user, url)
+        if dupe:
             dupes += 1
+            latest = newest.get(url, "")
+            old = dupe.posted_date or ""
+            if latest and (not is_iso(old) or latest > old) and dupe.id not in redated_ids:
+                dupe.posted_date = latest
+                if old and not dupe.first_posted:
+                    dupe.first_posted = old
+                dupe.reposted_at = now()
+                redated_ids.add(dupe.id)
+                redated += 1
+                log.info("  %s -> already saved as job %s (%r, stage %s); reposted, posted date %s -> %s", what,
+                         dupe.id, logs.short(dupe.title, 60), dupe.status, old or "(none)", latest)
+            else:
+                log.info("  %s -> already saved as job %s (%r, stage %s, posted %s)", what, dupe.id,
+                         logs.short(dupe.title, 60), dupe.status, old or "(none)")
             continue
-        company = col(row, "company name", "company")
-        db.add(Job(user_id=user.id, url=url or None, title=title,
+        job = Job(user_id=user.id, url=url or None, title=title,
                    company="" if looks_like_url(company) else company, location=col(row, "location"),
-                   posted_date=col(row, "published at", "posted", "date"),
+                   posted_date=newest.get(url) or col(row, *POSTED),
                    description=col(row, "description", "job description"),
-                   status=_map_status(col(row, "status")), source="csv"))
+                   status=_map_status(col(row, "status")), source="csv")
+        db.add(job)
         db.flush()
         added += 1
+        log.info("  %s -> added as job %s (stage %s)", what, job.id, job.status)
     db.commit()
-    return {"rows": len(rows), "added": added, "duplicates": dupes, "skipped": invalid, "dead": dead}
+    log.info("CSV import done: %d rows, %d added, %d already saved (%d of them reposted, date updated), "
+             "%d without a title, %d taken down", len(rows), added, dupes, redated, invalid, dead)
+    return {"rows": len(rows), "added": added, "duplicates": dupes, "reposted": redated, "skipped": invalid, "dead": dead}
 
 
 @app.get("/api/export")
@@ -763,8 +866,8 @@ def export_all(db: Session = Depends(get_db)):
             "jobs": [{
                 **{k: getattr(j, k) for k in ("url", "title", "company", "location", "salary", "employment_type",
                                                "posted_date", "description", "source", "status", "tags", "notes",
-                                               "fit_score", "fit_json")},
-                "applied_at": iso(j.applied_at), "created_at": iso(j.created_at),
+                                               "fit_score", "fit_json", "first_posted")},
+                "applied_at": iso(j.applied_at), "created_at": iso(j.created_at), "reposted_at": iso(j.reposted_at),
                 "documents": [{"kind": d.kind, "content": d.content, "persona_name": d.persona_name,
                                "engine": d.engine or "",
                                "created_at": iso(d.created_at)} for d in j.documents],
@@ -796,6 +899,7 @@ async def import_backup(file: UploadFile = File(...), db: Session = Depends(get_
         raise HTTPException(400, "That isn't a Job Hacker backup file.")
 
     summary = {"profiles": 0, "jobs": 0, "duplicates": 0, "resumes": 0, "documents": 0}
+    log.info("backup import: file %r, %d profile(s)", file.filename, len(data.get("profiles", [])))
     for prof in data.get("profiles", []):
         name = (prof.get("name") or "Me").strip()
         u = db.query(User).filter(func.lower(User.name) == name.lower()).first()
@@ -832,8 +936,11 @@ async def import_backup(file: UploadFile = File(...), db: Session = Depends(get_
             same_linkless = not url and db.query(Job).filter(
                 Job.user_id == u.id, Job.url.is_(None), Job.title == j["title"][:300],
                 Job.company == (j.get("company") or "")).first()
-            if find_dupe(db, u, url) or same_linkless:
+            dupe = find_dupe(db, u, url) or same_linkless
+            if dupe:
                 summary["duplicates"] += 1
+                log.info("  %r at %r %s -> already saved as job %s (stage %s)", logs.short(j.get("title"), 60),
+                         logs.short(j.get("company"), 40), url or "(no link)", dupe.id, dupe.status)
                 continue
             job = Job(
                 user_id=u.id, url=url or None, title=j["title"][:300],
@@ -841,6 +948,7 @@ async def import_backup(file: UploadFile = File(...), db: Session = Depends(get_
                                                   "description", "tags", "notes", "fit_json")},
                 source=j.get("source") or "import", status=_map_status(j.get("status")),
                 fit_score=j.get("fit_score"), applied_at=_parse_dt(j.get("applied_at")),
+                reposted_at=_parse_dt(j.get("reposted_at")), first_posted=j.get("first_posted") or "",
                 created_at=_parse_dt(j.get("created_at")) or now(),
             )
             db.add(job)
@@ -852,7 +960,23 @@ async def import_backup(file: UploadFile = File(...), db: Session = Depends(get_
                                 created_at=_parse_dt(d.get("created_at")) or now()))
                 summary["documents"] += 1
     db.commit()
+    log.info("backup import done: %s", summary)
     return summary
+
+
+# ---------- log files ----------
+
+@app.get("/api/logs")
+def list_logs():
+    return {"folder": str(logs.LOG_DIR), "keep_days": logs.KEEP_DAYS, "files": logs.files()}
+
+
+@app.get("/api/logs/{name}")
+def get_log(name: str):
+    p = logs.path_for(name)
+    if not p:
+        raise HTTPException(404, "No log file with that name.")
+    return FileResponse(p, media_type="text/plain; charset=utf-8", filename=name)
 
 
 # ---------- frontend ----------

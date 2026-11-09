@@ -87,6 +87,9 @@ class Job(Base):
     fit_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
     fit_json: Mapped[str] = mapped_column(Text, default="")
     queued: Mapped[bool] = mapped_column(Boolean, default=False)  # on the overnight list
+    # Set when an import shows the posting went up again under the same link.
+    reposted_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    first_posted: Mapped[str] = mapped_column(String(50), default="", server_default="")  # posted date before the first repost
     applied_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=now)
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=now, onupdate=now)
@@ -151,7 +154,7 @@ class NightlyRun(Base):
 # never alters existing ones, so add missing columns here (SQLite-safe).
 _ADDED_COLUMNS = {
     "documents": {"engine": "VARCHAR(120) DEFAULT ''", "nightly": "BOOLEAN DEFAULT 0"},
-    "jobs": {"queued": "BOOLEAN DEFAULT 0"},
+    "jobs": {"queued": "BOOLEAN DEFAULT 0", "reposted_at": "DATETIME", "first_posted": "VARCHAR(50) DEFAULT ''"},
 }
 
 

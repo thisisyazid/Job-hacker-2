@@ -112,6 +112,9 @@ def run_for_user(user_id: int, trigger: str = "schedule") -> int | None:
                 if status:
                     run.status = status
                     run.finished_at = now()
+                    log.info("overnight run %s (%s) %s: %s made, %s failed of %s%s", run.id, trigger, status, run.made,
+                             run.failed, run.total, "" if status != "failed" or not entries else
+                             ": " + entries[-1].get("note", ""))
                 db.commit()
 
             try:
@@ -129,6 +132,7 @@ def run_for_user(user_id: int, trigger: str = "schedule") -> int | None:
 
             tasks = plan(db, user_id, s)
             run.total = len(tasks)
+            log.info("overnight run %s (%s) started: %d task(s) with %s", run.id, trigger, len(tasks), run.engine)
             save()
             failed_jobs: set[int] = set()
             remaining = {}
@@ -161,6 +165,8 @@ def run_for_user(user_id: int, trigger: str = "schedule") -> int | None:
                     entry.update(ok=False, note=str(e) if isinstance(e, ai.AIError) else f"{e.__class__.__name__}: {e}")
                     run.failed += 1
                 entry["seconds"] = round(time.time() - t0)
+                log.info("overnight %s for job %s (%s): %s in %ss", task, job.id, (job.title or "")[:60],
+                         "done" if entry.get("ok") else "failed: " + entry.get("note", ""), entry["seconds"])
                 entries.append(entry)
                 if not entry.get("ok"):
                     failed_jobs.add(job.id)
