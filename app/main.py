@@ -742,14 +742,49 @@ def _map_status(s: str | None) -> str:
     return OLD_STATUS.get((s or "").strip().lower(), "saved")
 
 
+TITLE_COLS = ("job title", "title", "name", "job name", "position", "role", "job")
+COMPANY_COLS = ("company name", "company", "employer", "organisation", "organization", "hiring organization")
+URL_COLS = ("job url", "url", "link", "job link", "posting url", "job posting url", "apply url")
+
+
+def _csv_fail(filename: str | None, why: str):
+    log.warning("CSV import of %r failed: %s", filename, why)
+    raise HTTPException(400, why)
+
+
+def _read_csv(raw: bytes, filename: str | None) -> list[dict]:
+    """Reads the CSV the way people actually save it: UTF-8 from Notion or
+    Google Sheets, Windows encoding from Excel, commas, semicolons or tabs."""
+    if raw[:2] == b"PK" or raw[:4] == b"\xd0\xcf\x11\xe0":
+        _csv_fail(filename, "That's an Excel file, not a CSV. In Excel use File → Save As → CSV UTF-8, then import that file.")
+    for enc in ("utf-8-sig", "cp1252", "latin-1"):
+        try:
+            text = raw.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    if not text.strip():
+        _csv_fail(filename, "That file is empty.")
+    head = text[:5000]
+    try:
+        delim = csv.Sniffer().sniff(head.split("\n", 1)[0], delimiters=",;\t|").delimiter
+    except csv.Error:
+        delim = ","
+    rows = list(csv.DictReader(io.StringIO(text), delimiter=delim))
+    cols = [k.strip().lower() for k in (rows[0].keys() if rows else csv.DictReader(io.StringIO(text), delimiter=delim).fieldnames or []) if k]
+    log.info("CSV import: file %r read as %s, separated by %r, %d rows, columns: %s",
+             filename, enc, delim, len(rows), ", ".join(cols) or "none")
+    if not any(c in cols for c in TITLE_COLS):
+        _csv_fail(filename, f"Couldn't find a job title column. The file has: {', '.join(cols) or 'no columns'}. "
+                            "Name the column with the job titles “Job title” and import again.")
+    if not rows:
+        _csv_fail(filename, "That file has column names but no jobs under them.")
+    return rows
+
+
 @app.post("/api/import/csv")
 async def import_csv(file: UploadFile = File(...), user: User = Depends(current_user), db: Session = Depends(get_db)):
-    raw = await file.read()
-    try:
-        text = raw.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        raise HTTPException(400, "Save the file as CSV (UTF-8) and try again.")
-    rows = list(csv.DictReader(io.StringIO(text)))
+    rows = _read_csv(await file.read(), file.filename)
 
     def col(row, *names):
         low = {k.strip().lower(): v for k, v in row.items() if k}
@@ -758,14 +793,13 @@ async def import_csv(file: UploadFile = File(...), user: User = Depends(current_
                 return low[n].strip()
         return ""
 
-    log.info("CSV import into profile %r: file %r, %d rows, columns: %s", user.name, file.filename, len(rows),
-             ", ".join(k for k in (rows[0].keys() if rows else []) if k))
+    log.info("CSV import into profile %r: %d rows", user.name, len(rows))
     added = dupes = invalid = dead = 0
     for n, row in enumerate(rows, start=2):  # line 1 is the header
-        raw_url = col(row, "job url", "url", "link")
+        raw_url = col(row, *URL_COLS)
         url = normalize_url(raw_url)
-        title = col(row, "job title", "title")
-        company = col(row, "company name", "company")
+        title = col(row, *TITLE_COLS)
+        company = col(row, *COMPANY_COLS)
         what = f"line {n}: {logs.short(title, 60)!r} at {logs.short(company, 40)!r} {url or '(no link)'}"
         if not title:
             invalid += 1

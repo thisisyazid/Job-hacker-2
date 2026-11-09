@@ -71,7 +71,7 @@ function toast(msg, kind = "") {
   t.textContent = msg;
   t.className = "show " + kind;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (t.className = kind), kind === "error" ? 5000 : 2600);
+  toastTimer = setTimeout(() => (t.className = kind), Math.max(kind === "error" ? 5000 : 2600, String(msg).length * 55));
 }
 
 function ago(iso) {
@@ -672,7 +672,7 @@ async function renderBulk(body) {
     fd.append("file", file);
     try {
       const r = await api("/import/csv", { method: "POST", body: fd });
-      toast(`Imported ${r.added} job${r.added === 1 ? "" : "s"}${r.duplicates ? `, skipped ${r.duplicates} already saved` : ""}${r.dead ? `, left out ${r.dead} taken down` : ""}`);
+      toast(importSummary(r));
       state.jobs = null;
       renderBulk(body);
     } catch (err) { toast(err.message, "error"); }
@@ -1195,8 +1195,7 @@ async function renderSettings(params) {
     fd.append("file", file);
     try {
       const r = await api(path, { method: "POST", body: fd });
-      const added = r.jobs ?? r.added;
-      toast(`Imported ${added} job${added === 1 ? "" : "s"}${r.duplicates ? `, skipped ${r.duplicates} already saved` : ""}`);
+      toast(importSummary(r));
       state.jobs = null;
     } catch (e) { toast(e.message, "error"); }
     input.value = "";
@@ -1206,6 +1205,15 @@ async function renderSettings(params) {
   document.getElementById("logout")?.addEventListener("click", async () => {
     await api("/logout", { method: "POST" }); state.session = null; state.jobs = null; route();
   });
+}
+
+function importSummary(r) {
+  const added = r.jobs ?? r.added ?? 0;
+  const parts = [`Imported ${added} job${added === 1 ? "" : "s"}`];
+  if (r.duplicates) parts.push(`${r.duplicates} already saved`);
+  if (r.dead) parts.push(`${r.dead} taken down left out`);
+  if (r.skipped) parts.push(`${r.skipped} without a title skipped`);
+  return parts.join(", ") + ". Each row is listed in today's log (Settings → Log files).";
 }
 
 async function drawLogs(box) {

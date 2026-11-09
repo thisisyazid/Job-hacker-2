@@ -354,3 +354,26 @@ def test_daily_log_file(c):
     assert "line 3: 'Log Test Role'" in text and "-> already saved as job" in text
     assert c.get("/api/logs/..%2Fjobhacker.db").status_code == 404
     assert c.get("/api/logs/secrets.txt").status_code == 404
+
+
+@pytest.mark.parametrize("name,data,title", [
+    ("excel", "Job title,Company Name,Job URL\nCafé Lead,Société,https://csv.example/e1\n".encode("cp1252"), "Café Lead"),
+    ("semicolon", b"Job title;Company Name;Job URL\nSemi Role;Acme;https://csv.example/e2\n", "Semi Role"),
+    ("tabs", b"Title\tCompany\tURL\nTab Role\tGamma\thttps://csv.example/e3\n", "Tab Role"),
+    ("notion", b"Name,Company,URL\nNotion Role,Beta,https://csv.example/e4\n", "Notion Role"),
+])
+def test_csv_as_people_save_it(c, name, data, title):
+    r = c.post("/api/import/csv", files={"file": (f"{name}.csv", data, "text/csv")}).json()
+    assert r["added"] == 1, r
+    assert any(j["title"] == title for j in c.get("/api/jobs").json())
+
+
+def test_csv_bad_files_say_why(c):
+    def err(data):
+        r = c.post("/api/import/csv", files={"file": ("x.csv", data, "text/csv")})
+        assert r.status_code == 400
+        return r.json()["detail"]
+    assert "Excel file" in err(b"PK\x03\x04rest")
+    assert "empty" in err(b"  \n")
+    assert "Couldn't find a job title column" in err(b"Company,URL\nAcme,https://a.example\n")
+    assert "no jobs" in err(b"Job title,URL\n")
