@@ -341,3 +341,16 @@ def test_looks_like_url():
     from app.scrape import looks_like_url as L
     assert L("https://www.linkedin.com/jobs/view/1/?trackingId=x") and L("%2Fm%3D&eBP=CwEA") and L("www.dbs.com/careers")
     assert not L("Senior Scrum Master") and not L("Node.js Developer") and not L("ASP.NET Lead") and not L("")
+
+
+def test_daily_log_file(c):
+    csv_text = "Job title,Job URL\nLog Test Role,https://jobs.example.com/log-test-1\nLog Test Role,https://jobs.example.com/log-test-1\n"
+    r = c.post("/api/import/csv", files={"file": ("log.csv", csv_text, "text/csv")}).json()
+    assert r["added"] == 1 and r["duplicates"] == 1
+    files = c.get("/api/logs").json()["files"]
+    assert files and files[0]["name"].startswith("jobhacker-")
+    text = c.get(f"/api/logs/{files[0]['name']}").text
+    assert "CSV import done: 2 rows, 1 added, 1 already saved" in text
+    assert "line 3: 'Log Test Role'" in text and "-> already saved as job" in text
+    assert c.get("/api/logs/..%2Fjobhacker.db").status_code == 404
+    assert c.get("/api/logs/secrets.txt").status_code == 404
