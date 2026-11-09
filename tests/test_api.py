@@ -390,7 +390,11 @@ def test_csv_repost_updates_posted_date(c):
              "Repost Role,https://jobs.example.com/repost-1,2026-10-01T00:00:00.000Z\n")
     r = c.post("/api/import/csv", files={"file": ("b.csv", later, "text/csv")}).json()
     assert r["added"] == 0 and r["duplicates"] == 2 and r["reposted"] == 1
-    assert c.get(f"/api/jobs/{job['id']}").json()["posted_date"] == "2026-11-06"
+    j = c.get(f"/api/jobs/{job['id']}").json()
+    assert j["posted_date"] == "2026-11-06" and j["first_posted"] == "2026-09-03" and j["reposted_at"]
+    backup = json.loads(c.get("/api/export").content)
+    saved = next(x for p in backup["profiles"] for x in p["jobs"] if x["title"] == "Repost Role")
+    assert saved["first_posted"] == "2026-09-03" and saved["reposted_at"]
     # an older date never moves it back
     older = "Job title,Job URL,Published At\nRepost Role,https://jobs.example.com/repost-1,2026-08-01\n"
     assert c.post("/api/import/csv", files={"file": ("c.csv", older, "text/csv")}).json()["reposted"] == 0
@@ -400,4 +404,5 @@ def test_csv_repost_updates_posted_date(c):
              "Twice Role,https://jobs.example.com/twice,2026-10-20\n")
     r = c.post("/api/import/csv", files={"file": ("d.csv", twice, "text/csv")}).json()
     assert r["added"] == 1 and r["reposted"] == 0
-    assert next(j for j in c.get("/api/jobs").json() if j["title"] == "Twice Role")["posted_date"] == "2026-10-20"
+    twice_job = next(j for j in c.get("/api/jobs").json() if j["title"] == "Twice Role")
+    assert twice_job["posted_date"] == "2026-10-20" and not twice_job["reposted_at"]

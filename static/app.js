@@ -281,6 +281,7 @@ async function renderList(keep = false) {
   jobs.forEach((j) => counts[j.status] = (counts[j.status] || 0) + 1);
   const active = jobs.length - counts.closed;
   const picked = jobs.filter((j) => j.queued).length;
+  const reposted = jobs.filter((j) => j.reposted_at).length;
   const y = scrollY;
   const focusQ = document.activeElement?.id === "q";
 
@@ -305,6 +306,7 @@ async function renderList(keep = false) {
         <div class="flow-legend" role="group" aria-label="Filter by stage">
           <button class="stage" data-filter="active" aria-pressed="${state.filter === "active"}">Active <span class="n">${active}</span></button>
           <button class="stage stage-tn" data-filter="tonight" aria-pressed="${state.filter === "tonight"}"><span class="dot"></span>Tonight <span class="n">${picked}</span></button>
+          ${reposted || state.filter === "reposted" ? raw(html`<button class="stage stage-rp" data-filter="reposted" aria-pressed="${state.filter === "reposted"}" title="Jobs an import showed were posted again, in any stage"><span class="dot"></span>Reposted <span class="n">${reposted}</span></button>`) : ""}
           ${STAGES.map((s) => raw(html`<button class="stage" data-filter="${s.id}" aria-pressed="${state.filter === s.id}" style="--c:${raw(stageColor(s.id))}"><span class="dot"></span>${s.label} <span class="n">${counts[s.id]}</span></button>`))}
           <button class="stage" data-filter="all" aria-pressed="${state.filter === "all"}">All <span class="n">${jobs.length}</span></button>
         </div>
@@ -451,6 +453,7 @@ function drawRows() {
   const needle = state.q.trim().toLowerCase();
   let rows = state.jobs.filter((j) => {
     if (state.filter === "tonight") { if (!j.queued) return false; }
+    else if (state.filter === "reposted") { if (!j.reposted_at) return false; }
     else if (state.filter === "active" && j.status === "closed") return false;
     else if (!["all", "active"].includes(state.filter) && j.status !== state.filter) return false;
     if (needle && !`${j.title} ${j.company} ${j.location} ${j.tags}`.toLowerCase().includes(needle)) return false;
@@ -475,7 +478,7 @@ function drawRows() {
   const count = document.getElementById("sheet-count");
   count.textContent = `${rows.length} job${rows.length === 1 ? "" : "s"}${rows.length !== state.jobs.length ? ` of ${state.jobs.length}` : ""}`;
   if (!rows.length) {
-    tbody.innerHTML = html`<tr class="none"><td colspan="${SHEET_COLS.length}">${state.filter === "tonight" && !state.q ? "Nothing on tonight's list. Tick jobs in the Tonight column, or use Pick saved jobs without a resume." : `No jobs match.${state.filter !== "all" ? " Try the All filter." : ""}`}</td></tr>`;
+    tbody.innerHTML = html`<tr class="none"><td colspan="${SHEET_COLS.length}">${state.filter === "tonight" && !state.q ? "Nothing on tonight's list. Tick jobs in the Tonight column, or use Pick saved jobs without a resume." : state.filter === "reposted" && !state.q ? "No reposted jobs. When a CSV import shows a saved job was posted again, it appears here." : `No jobs match.${state.filter !== "all" ? " Try the All filter." : ""}`}</td></tr>`;
     return;
   }
   tbody.innerHTML = rows.map((j) => html`
@@ -487,6 +490,7 @@ function drawRows() {
         <a class="t" href="#/job/${j.id}"><span class="st-dot m" aria-hidden="true"></span><span>${j.title}</span></a>
         <span class="sub">${[j.company, j.location].filter(Boolean).join(", ")}</span>
         ${j.has_description ? "" : raw('<span class="flag warn">No description</span>')}
+        ${j.reposted_at ? raw(html`<span class="flag rp" title="${j.first_posted ? `First posted ${fmtPosted(j.first_posted, true)}` : "Posted again"}">Reposted</span>`) : ""}
         <span class="m-tags">${j.has_resume ? raw('<span class="flag ok">Resume</span>') : ""}</span>
       </td>
       <td class="c-co">${j.company || ""}</td>
@@ -494,7 +498,7 @@ function drawRows() {
       <td class="c-fit num">${j.fit_score ? raw(html`<span class="fitn" style="--fc:${raw(fitColor(j.fit_score))}" aria-label="Fit ${j.fit_score} out of 10">${j.fit_score}</span>`) : raw('<span class="nil">–</span>')}</td>
       <td class="c-res">${j.has_resume ? raw('<span class="flag ok">Ready</span>') : raw('<span class="nil">–</span>')}</td>
       <td class="c-tn"><input type="checkbox" data-q="${j.id}" ${j.queued ? "checked" : ""} ${j.has_description ? "" : "disabled"} aria-label="Tonight's list: ${j.title}" title="${j.has_description ? "Make overnight" : "Needs a description first"}"></td>
-      <td class="c-post num" title="${j.posted_date ? `Posted ${fmtPosted(j.posted_date, true)}` : "Posting date unknown"}">${j.posted_date ? fmtPosted(j.posted_date) : raw('<span class="nil">–</span>')}</td>
+      <td class="c-post num" title="${j.posted_date ? `Posted ${fmtPosted(j.posted_date, true)}${j.first_posted ? `, first posted ${fmtPosted(j.first_posted, true)}` : ""}` : "Posting date unknown"}">${j.posted_date ? fmtPosted(j.posted_date) : raw('<span class="nil">–</span>')}</td>
       <td class="c-upd num" title="Changed in the app ${longDate(j.updated_at)}">${ago(j.updated_at)}</td>
     </tr>`).join("");
 }
@@ -817,7 +821,7 @@ function showReview(draft, note) {
 async function renderJob(id) {
   const j = await api(`/jobs/${id}`);
   const personas = state.session.ai_enabled ? await api("/personas") : [];
-  const facts = [["Location", j.location], ["Salary", j.salary], ["Job type", j.employment_type], ["Posted", fmtPosted(j.posted_date, true)], ["Saved", longDate(j.created_at)]].filter(([, v]) => v);
+  const facts = [["Location", j.location], ["Salary", j.salary], ["Job type", j.employment_type], ["Posted", fmtPosted(j.posted_date, true) + (j.reposted_at ? (j.first_posted ? ` (reposted; first posted ${fmtPosted(j.first_posted, true)})` : " (reposted)") : "")], ["Saved", longDate(j.created_at)]].filter(([, v]) => v);
   const desc = j.description || "";
 
   setView(html`

@@ -101,7 +101,7 @@ def job_out(j: Job, full: bool = True) -> dict:
         "id": j.id, "url": j.url, "title": j.title, "company": j.company, "location": j.location,
         "salary": j.salary, "employment_type": j.employment_type, "posted_date": j.posted_date,
         "source": j.source, "status": j.status, "tags": j.tags, "fit_score": j.fit_score,
-        "queued": bool(j.queued),
+        "queued": bool(j.queued), "reposted_at": iso(j.reposted_at), "first_posted": j.first_posted or "",
         "applied_at": iso(j.applied_at), "created_at": iso(j.created_at), "updated_at": iso(j.updated_at),
         "has_description": bool(j.description and j.description.strip()),
     }
@@ -830,6 +830,9 @@ async def import_csv(file: UploadFile = File(...), user: User = Depends(current_
             old = dupe.posted_date or ""
             if latest and (not is_iso(old) or latest > old) and dupe.id not in redated_ids:
                 dupe.posted_date = latest
+                if old and not dupe.first_posted:
+                    dupe.first_posted = old
+                dupe.reposted_at = now()
                 redated_ids.add(dupe.id)
                 redated += 1
                 log.info("  %s -> already saved as job %s (%r, stage %s); reposted, posted date %s -> %s", what,
@@ -863,8 +866,8 @@ def export_all(db: Session = Depends(get_db)):
             "jobs": [{
                 **{k: getattr(j, k) for k in ("url", "title", "company", "location", "salary", "employment_type",
                                                "posted_date", "description", "source", "status", "tags", "notes",
-                                               "fit_score", "fit_json")},
-                "applied_at": iso(j.applied_at), "created_at": iso(j.created_at),
+                                               "fit_score", "fit_json", "first_posted")},
+                "applied_at": iso(j.applied_at), "created_at": iso(j.created_at), "reposted_at": iso(j.reposted_at),
                 "documents": [{"kind": d.kind, "content": d.content, "persona_name": d.persona_name,
                                "engine": d.engine or "",
                                "created_at": iso(d.created_at)} for d in j.documents],
@@ -945,6 +948,7 @@ async def import_backup(file: UploadFile = File(...), db: Session = Depends(get_
                                                   "description", "tags", "notes", "fit_json")},
                 source=j.get("source") or "import", status=_map_status(j.get("status")),
                 fit_score=j.get("fit_score"), applied_at=_parse_dt(j.get("applied_at")),
+                reposted_at=_parse_dt(j.get("reposted_at")), first_posted=j.get("first_posted") or "",
                 created_at=_parse_dt(j.get("created_at")) or now(),
             )
             db.add(job)
