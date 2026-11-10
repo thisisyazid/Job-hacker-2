@@ -21,7 +21,7 @@ const state = {
   selected: new Set(),  // job ids ticked in the select column, for bulk actions
 };
 let lastRows = [];
-// Filters can be combined with Ctrl/Cmd/Shift+click: stages are OR'd together (Saved or Applied),
+// Filters combine: tap one to switch it on, tap again to switch it off. Stages are OR'd together (Saved or Applied),
 // and Tonight / Reposted / No description narrow that down. All shows everything.
 state.filters = new Set((localGet("jh.filters") || state.filter || "active").split(",").filter(Boolean));
 function fOn(id) { return state.filters.has(id); }
@@ -31,6 +31,19 @@ function setFilters(ids) {
   state.filter = state.filters.size === 1 ? [...state.filters][0] : "multi";
   localSet("jh.filters", [...state.filters].join(","));
   localSet("jh.filter", state.filter);
+}
+// Tap a filter to switch it on, tap again to switch it off. All resets. Active is the default:
+// the first filter tapped replaces it, a stage replaces it, and tapping Active clears the stages.
+function toggleFilter(id) {
+  const f = new Set(state.filters);
+  const stageIds = STAGES.map((st) => st.id);
+  if (id === "all") return ["all"];
+  if (f.has(id)) { f.delete(id); return [...f]; }
+  f.delete("all");
+  if (id === "active") stageIds.forEach((x) => f.delete(x));
+  else if (stageIds.includes(id) || (f.size === 1 && f.has("active"))) f.delete("active");
+  f.add(id);
+  return [...f];
 }
 function jobPasses(j) {
   const f = state.filters;
@@ -483,7 +496,7 @@ async function renderList(keep = false) {
           <button class="btn btn-ghost btn-s" id="sel-clear">Clear</button>
         </div>
       </div>
-      <p class="hint sel-hint">Click a row to select it, <span class="kbd">Ctrl</span>+click to add more, <span class="kbd">Shift</span>+click for a range, then right-click for actions. Click a title, or double-click a row, to open the job. <span class="kbd">Ctrl</span>+click the filters above to combine them.</p>
+      <p class="hint sel-hint">Click a row to select it, <span class="kbd">Ctrl</span>+click to add more, <span class="kbd">Shift</span>+click for a range, then right-click for actions. Click a title, or double-click a row, to open the job. Tap several filters above to combine them; tap one again to switch it off.</p>
       <div class="sheet-wrap">
         <table class="sheet">
           <thead><tr>
@@ -513,14 +526,8 @@ async function renderList(keep = false) {
     if (await removeDeadJobs(jobs.filter((j) => looksLikeUrl(j.title)).length)) renderList(true);
   });
   if (!jobs.length) return;
-  $main.querySelectorAll("[data-filter]").forEach((b) => b.addEventListener("click", (e) => {
-    const id = b.dataset.filter;
-    if ((e.ctrlKey || e.metaKey || e.shiftKey) && id !== "all") {
-      const f = new Set(state.filters);
-      f.delete("all");
-      if (f.has(id)) f.delete(id); else f.add(id);
-      setFilters([...f]);
-    } else setFilters([id]);
+  $main.querySelectorAll("[data-filter]").forEach((b) => b.addEventListener("click", () => {
+    setFilters(toggleFilter(b.dataset.filter));
     state.shown = 0;
     renderList(true);
   }));
