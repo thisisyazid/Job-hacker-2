@@ -248,6 +248,17 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .c-upd { width: 82px; }
 .c-post { width: 104px; }
 .c-app { width: 96px; }
+.c-sel { width: 40px; text-align: center !important; cursor: pointer; padding-left: 10px !important; padding-right: 0 !important; }
+.c-sel input { width: 20px; height: 20px; margin: 0; vertical-align: middle; accent-color: var(--accent); cursor: pointer; }
+.sheet tr.picked td { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.sel-bar { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 20; width: min(calc(100% - 32px), 640px);
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; padding: 8px 8px 8px 16px;
+  background: var(--ink); color: var(--surface); border-radius: var(--radius-m); box-shadow: 0 8px 28px rgb(0 0 0 / .25); }
+body:has(.sel-bar:not([hidden])) #toast { bottom: 84px; }
+.sel-bar[hidden] { display: none; }
+.sel-bar p { margin: 0; font-size: 16px; }
+.sel-tools { display: flex; flex-wrap: wrap; gap: 6px; }
+.sel-bar .btn-ghost { color: var(--surface); }
 .c-tn { width: 84px; text-align: center !important; cursor: pointer; }
 .c-tn input { width: 22px; height: 22px; margin: 0; vertical-align: middle; accent-color: var(--accent); cursor: pointer; }
 .c-tn input:disabled { cursor: not-allowed; opacity: .35; }
@@ -255,6 +266,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .stage-tn { --c: var(--accent); }
 .stage-rp { --c: var(--repost); }
 .stage-ar { --c: var(--archived); }
+.stage-nd { --c: var(--st-offer); }
 .archive-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px;
   padding: 8px 8px 8px 14px; margin: 0 0 10px; background: var(--soft); border: 1px solid var(--line); border-radius: var(--radius-m); }
 .archive-bar p { margin: 0; font-size: 16px; color: var(--muted); }
