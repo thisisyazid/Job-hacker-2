@@ -493,7 +493,13 @@ async function renderList(keep = false) {
           <button class="btn btn-ghost btn-s" id="sel-clear">Clear</button>
         </div>
       </div>
-      <p class="hint sel-hint">Click a row to select it, <span class="kbd">Ctrl</span>+click to add more, <span class="kbd">Shift</span>+click for a range, then right-click for actions. Click a title, or double-click a row, to open the job. Tap several filters above to combine them; tap one again to switch it off.</p>
+      <div class="sheet-tools">
+  <p class="hint sel-hint">Click a row to select it, <span class="kbd">Ctrl</span>+click to add more, <span class="kbd">Shift</span>+click for a range, then right-click for actions. Click a title, or double-click a row, to open the job. Tap several filters above to combine them; tap one again to switch it off.</p>
+        <div class="export-tools" role="group" aria-label="Export"><span id="exp-n">Export</span>
+          <button class="btn btn-s" id="exp-xlsx" type="button">Excel</button>
+          <button class="btn btn-s" id="exp-csv" type="button">CSV</button>
+        </div>
+      </div>
       <div class="sheet-wrap">
         <table class="sheet">
           <thead><tr>
@@ -633,6 +639,8 @@ async function renderList(keep = false) {
     tbody.querySelectorAll("input[data-sel]").forEach((b) => { b.checked = e.target.checked; b.closest("tr").classList.toggle("picked", b.checked); });
     drawSelBar();
   });
+  document.getElementById("exp-xlsx").addEventListener("click", (e) => exportRows("xlsx", e.currentTarget));
+  document.getElementById("exp-csv").addEventListener("click", (e) => exportRows("csv", e.currentTarget));
   document.getElementById("sel-clear").addEventListener("click", () => { state.selected.clear(); syncSel(); });
   document.getElementById("sel-archive").addEventListener("click", () => bulkArchive(true));
   document.getElementById("sel-unarchive").addEventListener("click", () => bulkArchive(false));
@@ -728,6 +736,8 @@ function drawRows() {
   }[state.sort] || ((a, b) => (a.updated_at || "").localeCompare(b.updated_at || ""));
   rows.sort((a, b) => dir * cmp(a, b));
   lastRows = rows;
+  const expN = document.getElementById("exp-n");
+  if (expN) expN.textContent = `Export the ${rows.length} job${rows.length === 1 ? "" : "s"} shown:`;
 
   const tbody = document.getElementById("jobs");
   const count = document.getElementById("sheet-count");
@@ -772,6 +782,28 @@ function drawRows() {
 }
 
 let sheetObserver;
+
+// Download the job list as it's shown (filters, search and sort applied) as Excel or CSV.
+async function exportRows(format, btn) {
+  const ids = lastRows.map((j) => j.id);
+  if (!ids.length) return toast("No jobs to export. Change the filters or search first.");
+  const old = btn.textContent;
+  btn.disabled = true; btn.textContent = "Preparing…";
+  try {
+    const res = await fetch("/api/jobs/export", {
+      method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ job_ids: ids, format, base_url: location.origin + location.pathname }),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || "Couldn't make the file.");
+    const blob = await res.blob();
+    const name = (res.headers.get("content-disposition") || "").match(/filename="([^"]+)"/)?.[1] || `job-hacker-jobs.${format}`;
+    const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(blob), download: name });
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    toast(`Exported ${ids.length} job${ids.length === 1 ? "" : "s"} to ${name}`);
+  } catch (err) { toast(err.message, "error"); }
+  btn.disabled = false; btn.textContent = old;
+}
 
 let selAnchor = null;  // the row a Shift+click range starts from
 function fineMouse() { return matchMedia("(hover: hover) and (pointer: fine)").matches; }

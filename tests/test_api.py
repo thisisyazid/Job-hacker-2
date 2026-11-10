@@ -537,3 +537,26 @@ def test_referral_stage(c):
     assert r["added"] == 1
     assert next(x for x in c.get("/api/jobs").json() if x["title"] == "CSV referral")["status"] == "referral"
     assert c.post("/api/jobs/stage", json={"job_ids": [j["id"]], "status": "applied"}).json()["changed"] == 1
+
+
+def test_export_jobs_excel_and_csv(c):
+    import openpyxl
+    a = c.post("/api/jobs", json={"title": "Export A", "company": "Acme", "url": "https://jobs.example.com/exp-a", "status": "referral"}).json()
+    b = c.post("/api/jobs", json={"title": "=SUM(1,2) Analyst", "company": "Evil"}).json()
+    body = {"job_ids": [b["id"], a["id"]], "format": "xlsx", "base_url": "http://192.168.0.10:8080/"}
+    r = c.post("/api/jobs/export", json=body)
+    assert r.status_code == 200 and r.headers["content-disposition"].endswith('.xlsx"')
+    ws = openpyxl.load_workbook(io.BytesIO(r.content)).active
+    head = [x.value for x in ws[1]]
+    assert head[:2] == ["Stage", "Job title"] and "Job posting" in head and "Job Hacker link" in head
+    assert ws.cell(2, 2).value.startswith("=SUM") and ws.cell(2, 2).data_type == "s"  # text, not a formula
+    assert ws.cell(3, 1).value == "Referral" and ws.cell(3, 2).value == "Export A"  # list order kept
+    assert ws.cell(3, 2).hyperlink.target == "https://jobs.example.com/exp-a"
+    link = ws.cell(3, head.index("Job Hacker link") + 1)
+    assert link.value == f"http://192.168.0.10:8080/#/job/{a['id']}" and link.hyperlink.target == link.value
+    body["format"] = "csv"
+    text = c.post("/api/jobs/export", json=body).content.decode("utf-8-sig")
+    lines = text.strip().splitlines()
+    assert lines[0].startswith("Stage,Job title") and "'=SUM(1" in lines[1]
+    assert "https://jobs.example.com/exp-a" in lines[2]
+    assert c.post("/api/jobs/export", json={"job_ids": [], "format": "pdf"}).status_code == 400

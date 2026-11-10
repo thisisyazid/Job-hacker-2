@@ -164,6 +164,12 @@ class JobPatch(BaseModel):
     archived: Optional[bool] = None
 
 
+class ExportIn(BaseModel):
+    job_ids: list[int]
+    format: str = "xlsx"  # xlsx | csv
+    base_url: str = ""  # where the app is opened, for links back to each job
+
+
 class StageIn(BaseModel):
     job_ids: list[int]
     status: str
@@ -604,6 +610,80 @@ def _set_archived(j: Job, archived: bool) -> bool:
     log.info("%s job %s: %r at %r", "archived" if archived else "unarchived", j.id, logs.short(j.title, 60),
              logs.short(j.company, 40))
     return True
+
+
+EXPORT_COLS = ("Stage", "Job title", "Company", "Location", "Salary", "Job type", "Posted", "Applied", "Fit",
+               "Resume", "Tonight", "Reposted", "Archived", "Tags", "Notes", "Job posting", "Job Hacker link")
+
+
+def _safe_cell(v):
+    """Text that a spreadsheet would run as a formula (=, +, -, @) is kept as text."""
+    if isinstance(v, str) and v[:1] in ("=", "+", "-", "@"):
+        return "'" + v
+    return v
+
+
+@app.post("/api/jobs/export")
+def export_jobs(body: ExportIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Download the given jobs (the job list as filtered and sorted) as Excel or CSV, with links."""
+    if body.format not in ("xlsx", "csv"):
+        raise HTTPException(400, "format must be xlsx or csv")
+    found = {j.id: j for j in db.query(Job).filter(Job.user_id == user.id, Job.id.in_(body.job_ids)).all()} if body.job_ids else {}
+    jobs = [found[i] for i in body.job_ids if i in found]  # keep the list's order
+    with_resume = {r[0] for r in db.query(Document.job_id).filter(Document.job_id.in_(list(found)), Document.kind == "resume").distinct()} if found else set()
+    base = body.base_url.split("#")[0].rstrip("/") if body.base_url.startswith(("http://", "https://")) else ""
+    labels = {"saved": "Saved", "referral": "Referral", "applied": "Applied", "interviewing": "Interviewing",
+              "offer": "Offer", "closed": "Closed"}
+
+    def row(j: Job) -> list:
+        return [labels.get(j.status, j.status), j.title, j.company, j.location, j.salary, j.employment_type, j.posted_date,
+                j.applied_at.date().isoformat() if j.applied_at else "", j.fit_score if j.fit_score is not None else "",
+                "Yes" if j.id in with_resume else "", "Yes" if j.queued else "", "Yes" if j.reposted_at else "",
+                "Yes" if j.archived_at else "", j.tags or "", j.notes or "", j.url or "",
+                f"{base}/#/job/{j.id}" if base else ""]
+
+    stamp = logs._today()  # the app's time zone, not the server's
+    log.info("exported %d job(s) as %s", len(jobs), body.format)
+    if body.format == "csv":
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(EXPORT_COLS)
+        for j in jobs:
+            w.writerow([_safe_cell(v) for v in row(j)])
+        return Response(("\ufeff" + buf.getvalue()).encode("utf-8"), media_type="text/csv; charset=utf-8",
+                        headers={"Content-Disposition": f'attachment; filename="job-hacker-jobs-{stamp}.csv"'})
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+    from openpyxl.utils import get_column_letter
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Jobs"
+    ws.append(EXPORT_COLS)
+    for c in ws[1]:
+        c.font = Font(bold=True)
+    link_font = Font(color="1E46D7", underline="single")
+    title_col, post_col, app_col = EXPORT_COLS.index("Job title") + 1, EXPORT_COLS.index("Job posting") + 1, EXPORT_COLS.index("Job Hacker link") + 1
+    for r, j in enumerate(jobs, start=2):
+        for ci, v in enumerate(row(j), start=1):
+            cell = ws.cell(row=r, column=ci, value=v)
+            if isinstance(v, str):
+                cell.data_type = "s"  # never a formula
+        for ci, url in ((title_col, j.url), (post_col, j.url), (app_col, ws.cell(row=r, column=app_col).value)):
+            if url and str(url).startswith(("http://", "https://")):
+                ws.cell(row=r, column=ci).hyperlink = str(url)
+                ws.cell(row=r, column=ci).font = link_font
+    widths = {"Stage": 13, "Job title": 44, "Company": 28, "Location": 22, "Salary": 18, "Job type": 14, "Posted": 12,
+              "Applied": 12, "Fit": 6, "Resume": 9, "Tonight": 9, "Reposted": 10, "Archived": 10, "Tags": 16,
+              "Notes": 30, "Job posting": 45, "Job Hacker link": 34}
+    for i, name in enumerate(EXPORT_COLS, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = widths.get(name, 14)
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+    out = io.BytesIO()
+    wb.save(out)
+    return Response(out.getvalue(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f'attachment; filename="job-hacker-jobs-{stamp}.xlsx"'})
 
 
 @app.post("/api/jobs/stage")
