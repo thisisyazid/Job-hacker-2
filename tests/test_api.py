@@ -465,3 +465,12 @@ def test_archive_jobs(c):
     assert next(x for p in backup["profiles"] for x in p["jobs"] if x["title"] == "Old Role 2")["archived_at"]
     # unarchive
     assert c.patch(f"/api/jobs/{b['id']}", json={"archived": False}).json()["archived_at"] is None
+
+
+def test_bulk_stage(c):
+    a = c.post("/api/jobs", json={"title": "Bulk A"}).json()
+    b = c.post("/api/jobs", json={"title": "Bulk B", "status": "applied"}).json()
+    r = c.post("/api/jobs/stage", json={"job_ids": [a["id"], b["id"]], "status": "applied"}).json()
+    assert r["changed"] == 1 and all(j["status"] == "applied" for j in r["jobs"])
+    assert next(j for j in r["jobs"] if j["id"] == a["id"])["applied_at"]
+    assert c.post("/api/jobs/stage", json={"job_ids": [a["id"]], "status": "nope"}).status_code == 400

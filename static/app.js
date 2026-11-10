@@ -18,7 +18,9 @@ const state = {
   dir: localGet("jh.dir") || "desc",
   q: "",
   shown: 0,  // how many rows of the job table are drawn; more are added as you scroll
+  selected: new Set(),  // job ids ticked in the select column, for bulk actions
 };
+let lastRows = [];  // the job table's current rows (filtered and sorted), for "select all"
 const PAGE = 100;
 
 const $main = document.getElementById("main");
@@ -176,7 +178,7 @@ async function withAI(opts, fn) {
 
 // Ask before filling in a job: may AI be used if free reading finds nothing?
 // Resolves to "local" | "claude" | "none", or null when cancelled.
-function askFillEngine() {
+function askFillEngine(count = 1) {
   const all = engines();
   const opts = [
     all.local?.available && { id: "local", name: `Local (${all.local.model})`, note: "Free. Runs on your own computer, so it's slower." },
@@ -189,7 +191,7 @@ function askFillEngine() {
   dlg.className = "pick";
   dlg.innerHTML = html`
     <form method="dialog">
-      <h2>Fill in missing details</h2>
+      <h2>${count > 1 ? `Fill in ${count} jobs` : "Fill in missing details"}</h2>
       <p>Job Hacker reads the posting first. That's free and works for LinkedIn, MyCareersFuture and most career pages.</p>
       <p><strong>If that finds nothing, may it use AI as a last resort?</strong></p>
       <div class="pick-opts" role="radiogroup" aria-label="AI as a last resort">
@@ -239,6 +241,44 @@ async function fillJob(id) {
     : `${r.reason}${r.ai_allowed === false ? " Try again with AI, or" : ""} Open the posting, copy the text and paste it with Edit details.`,
     r.status === "failed" ? "error" : "");
   return null;
+}
+
+// Fill in several jobs one after another, with one question about AI up front,
+// a progress card with a Stop button, and a summary at the end. Returns the updated jobs.
+async function fillJobs(ids) {
+  if (!ids.length) return [];
+  const eng = await askFillEngine(ids.length);
+  if (!eng) return [];
+  const who = eng === "local" ? "your local model" : "Claude";
+  const stop = aiWait(`Filling in ${ids.length} job${ids.length === 1 ? "" : "s"}`, "Starting…",
+    eng === "local" ? "up to a few minutes each" : "5–30 seconds each", eng === "none" ? "the job site" : who, 100000);
+  const card = document.querySelector(".aiwait-card");
+  const detail = card?.querySelector(".aiwait-detail");
+  let stopped = false;
+  card?.insertAdjacentHTML("beforeend", '<div class="row" style="justify-content:center;margin-top:14px"><button class="btn btn-s" id="fill-stop">Stop after this job</button></div>');
+  card?.querySelector("#fill-stop")?.addEventListener("click", (e) => { stopped = true; e.target.disabled = true; e.target.textContent = "Stopping…"; });
+  const updated = [];
+  let nothing = 0, failed = 0, done = 0, ai = 0;
+  for (const id of ids) {
+    if (stopped) break;
+    const j = state.jobs?.find((x) => x.id === id);
+    if (detail) detail.textContent = `${done + 1} of ${ids.length}: ${j ? [j.title, j.company].filter(Boolean).join(", ") : ""}`;
+    try {
+      const r = await api(`/jobs/${id}/refresh`, { method: "POST", json: { engine: eng } });
+      if (r.status === "updated") { updated.push(r.job); if (/AI/.test(r.method || "")) ai++; }
+      else if (r.status === "unchanged") nothing++;
+      else failed++;
+    } catch { failed++; }
+    done++;
+    if (done < ids.length && !stopped) await new Promise((res) => setTimeout(res, 600));  // be gentle with job sites
+  }
+  stop();
+  const parts = [`Filled in ${updated.length} of ${done} job${done === 1 ? "" : "s"}${ai ? ` (${ai} with ${who})` : ""}`];
+  if (nothing) parts.push(`${nothing} had nothing new`);
+  if (failed) parts.push(`${failed} couldn't be read`);
+  if (stopped && done < ids.length) parts.push(`stopped with ${ids.length - done} left`);
+  toast(parts.join(", ") + (nothing || failed ? ". Details are in today's log (Settings → Log files)." : "."), failed && !updated.length ? "error" : "");
+  return updated;
 }
 
 // ---------- AI engine choice (Claude or the local Ollama model) ----------
@@ -359,6 +399,7 @@ async function renderList(keep = false) {
   const active = live.length - counts.closed;
   const picked = live.filter((j) => j.queued).length;
   const reposted = live.filter((j) => j.reposted_at).length;
+  const nodesc = live.filter((j) => !j.has_description && !looksLikeUrl(j.title)).length;
   const y = scrollY;
   const focusQ = document.activeElement?.id === "q";
 
@@ -385,12 +426,14 @@ async function renderList(keep = false) {
           <button class="stage stage-tn" data-filter="tonight" aria-pressed="${state.filter === "tonight"}"><span class="dot"></span>Tonight <span class="n">${picked}</span></button>
           ${reposted || state.filter === "reposted" ? raw(html`<button class="stage stage-rp" data-filter="reposted" aria-pressed="${state.filter === "reposted"}" title="Jobs an import showed were posted again, in any stage"><span class="dot"></span>Reposted <span class="n">${reposted}</span></button>`) : ""}
           ${STAGES.map((s) => raw(html`<button class="stage" data-filter="${s.id}" aria-pressed="${state.filter === s.id}" style="--c:${raw(stageColor(s.id))}"><span class="dot"></span>${s.label} <span class="n">${counts[s.id]}</span></button>`))}
+          ${nodesc || state.filter === "nodesc" ? raw(html`<button class="stage stage-nd" data-filter="nodesc" aria-pressed="${state.filter === "nodesc"}" title="Jobs without a description. Select them and use Fill in"><span class="dot"></span>No description <span class="n">${nodesc}</span></button>`) : ""}
           ${archived || state.filter === "archived" ? raw(html`<button class="stage stage-ar" data-filter="archived" aria-pressed="${state.filter === "archived"}" title="Jobs you've archived, kept for searching later"><span class="dot"></span>Archived <span class="n">${archived}</span></button>`) : ""}
           <button class="stage" data-filter="all" aria-pressed="${state.filter === "all"}" title="Every job, archived ones included">All <span class="n">${jobs.length}</span></button>
         </div>
       </section>
       ${state.filter === "closed" && counts.closed ? raw(html`<div class="archive-bar"><p>Done with these? Archive them to clear them out of the way. They stay searchable under <strong>Archived</strong>.</p>
         <button class="btn btn-s" id="ar-closed">Archive all ${counts.closed} closed job${counts.closed === 1 ? "" : "s"}</button></div>`) : ""}
+      ${state.filter === "nodesc" && nodesc ? raw(html`<div class="archive-bar"><p>Tick the jobs to fill in (or the box at the top of the table for all of them), then click <strong>Fill in</strong> in the bar at the bottom.</p></div>`) : ""}
       ${state.filter === "archived" && archived ? raw(html`<div class="archive-bar"><p>Archived jobs keep their stage and everything in them. Search them here, or open one to unarchive it.</p></div>`) : ""}
       <div class="tonight-bar" id="tonight-bar">
         <p class="tn-sum"><strong>Tonight's list:</strong> <span id="tn-sum">${picked ? `${picked} job${picked === 1 ? "" : "s"} picked.` : "empty. Tick jobs in the Tonight column."}</span></p>
@@ -401,10 +444,28 @@ async function renderList(keep = false) {
           <a class="btn btn-ghost btn-s" href="#/settings?at=nightly">Schedule</a>
         </div>
       </div>
+      <div class="sel-bar" id="sel-bar" hidden role="region" aria-label="Selected jobs">
+        <p><strong id="sel-n">0</strong> <span id="sel-what">selected</span></p>
+        <div class="sel-tools">
+          <select id="sel-stage" class="sel-stage" aria-label="Move the selected jobs to a stage">
+            <option value="">Move to…</option>
+            ${STAGES.map((st) => raw(html`<option value="${st.id}">${st.label}</option>`))}
+          </select>
+          <button class="btn btn-s btn-primary" id="sel-fill">Fill in</button>
+          <button class="btn btn-s" id="sel-tn-add">Tonight</button>
+          <button class="btn btn-s" id="sel-tn-rm">Off tonight</button>
+          <button class="btn btn-s" id="sel-archive">Archive</button>
+          <button class="btn btn-s" id="sel-unarchive">Unarchive</button>
+          <button class="btn btn-ghost btn-s" id="sel-clear">Clear</button>
+        </div>
+      </div>
+      <p class="hint sel-hint">Click a row to select it, <span class="kbd">Ctrl</span>+click to add more, <span class="kbd">Shift</span>+click for a range, then right-click for actions. Click a title, or double-click a row, to open the job.</p>
       <div class="sheet-wrap">
         <table class="sheet">
           <thead><tr>
-            ${SHEET_COLS.map((c) => raw(c.sort
+            ${SHEET_COLS.map((c) => raw(c.cls === "c-sel"
+              ? html`<th class="c-sel"><input type="checkbox" id="sel-all" aria-label="Select every job shown" title="Select every job shown"></th>`
+              : c.sort
               ? html`<th class="${c.cls}" aria-sort="${state.sort === c.sort ? (state.dir === "asc" ? "ascending" : "descending") : "none"}"><button data-sort="${c.sort}">${c.label}<span class="arr" aria-hidden="true">${state.sort === c.sort ? (state.dir === "asc" ? "↑" : "↓") : ""}</span></button></th>`
               : html`<th class="${c.cls}">${c.label}</th>`))}
           </tr></thead>
@@ -451,6 +512,8 @@ async function renderList(keep = false) {
   }));
   const tbody = document.getElementById("jobs");
   tbody.addEventListener("click", (e) => {
+    const sel = e.target.closest("td.c-sel");
+    if (sel) { if (e.target.tagName !== "INPUT") sel.querySelector("input")?.click(); return; }
     const tn = e.target.closest("td.c-tn");
     if (tn) { if (e.target.tagName !== "INPUT") tn.querySelector("input:not(:disabled)")?.click(); return; }
     const fill = e.target.closest("[data-fillrow]");
@@ -466,9 +529,37 @@ async function renderList(keep = false) {
     }
     if (e.target.closest("select, a, button, input")) return;
     const tr = e.target.closest("tr[data-id]");
+    if (!tr) return;
+    // Touch screens: a tap opens the job (select with the tick boxes). Mouse: click selects,
+    // like a spreadsheet; the title link or a double-click opens the job.
+    if (!fineMouse()) { location.hash = `#/job/${tr.dataset.id}`; return; }
+    selectRow(Number(tr.dataset.id), e);
+  });
+  tbody.addEventListener("dblclick", (e) => {
+    if (e.target.closest("select, a, button, input, td.c-sel, td.c-tn")) return;
+    const tr = e.target.closest("tr[data-id]");
     if (tr) location.hash = `#/job/${tr.dataset.id}`;
   });
+  tbody.addEventListener("mousedown", (e) => {  // no text highlighting on shift-click
+    if (e.shiftKey && !e.target.closest("input, select, textarea")) e.preventDefault();
+  });
+  tbody.addEventListener("contextmenu", (e) => {
+    const tr = e.target.closest("tr[data-id]");
+    if (!tr || e.target.closest("input, select, textarea")) return;
+    e.preventDefault();
+    const id = Number(tr.dataset.id);
+    if (!state.selected.has(id)) { state.selected.clear(); state.selected.add(id); selAnchor = id; syncSel(); }
+    openRowMenu(e.clientX, e.clientY);
+  });
   tbody.addEventListener("change", (e) => {
+    const pick = e.target.closest("input[data-sel]");
+    if (pick) {
+      const id = Number(pick.dataset.sel);
+      if (pick.checked) state.selected.add(id); else state.selected.delete(id);
+      selAnchor = id;
+      pick.closest("tr").classList.toggle("picked", pick.checked);
+      return drawSelBar();
+    }
     const box = e.target.closest("input[data-q]");
     if (box) queueJobs([Number(box.dataset.q)], box.checked);
   });
@@ -498,6 +589,19 @@ async function renderList(keep = false) {
     drawTonightBar();
   });
   drawTonightBar();
+  document.getElementById("sel-all").addEventListener("change", (e) => {
+    const ids = lastRows.map((j) => j.id);
+    if (e.target.checked) ids.forEach((id) => state.selected.add(id)); else ids.forEach((id) => state.selected.delete(id));
+    tbody.querySelectorAll("input[data-sel]").forEach((b) => { b.checked = e.target.checked; b.closest("tr").classList.toggle("picked", b.checked); });
+    drawSelBar();
+  });
+  document.getElementById("sel-clear").addEventListener("click", () => { state.selected.clear(); syncSel(); });
+  document.getElementById("sel-archive").addEventListener("click", () => bulkArchive(true));
+  document.getElementById("sel-unarchive").addEventListener("click", () => bulkArchive(false));
+  document.getElementById("sel-fill").addEventListener("click", bulkFill);
+  document.getElementById("sel-tn-add").addEventListener("click", () => bulkTonight(true));
+  document.getElementById("sel-tn-rm").addEventListener("click", () => bulkTonight(false));
+  document.getElementById("sel-stage").addEventListener("change", (e) => { if (e.target.value) bulkStage(e.target.value); e.target.value = ""; });
   tbody.addEventListener("change", async (e) => {
     const sel = e.target.closest("select[data-stage]");
     if (!sel) return;
@@ -548,6 +652,7 @@ async function drawTonightBar() {
 }
 
 const SHEET_COLS = [
+  { cls: "c-sel", label: "" },
   { cls: "c-stage", label: "Stage", sort: "stage" },
   { cls: "c-job", label: "Job", sort: "title" },
   { cls: "c-co", label: "Company", sort: "company" },
@@ -569,6 +674,7 @@ function drawRows() {
     if (state.filter === "archived" || state.filter === "all") { /* any stage */ }
     else if (state.filter === "tonight") { if (!j.queued) return false; }
     else if (state.filter === "reposted") { if (!j.reposted_at) return false; }
+    else if (state.filter === "nodesc") { if (j.has_description || looksLikeUrl(j.title)) return false; }
     else if (state.filter === "active" && j.status === "closed") return false;
     else if (!["all", "active"].includes(state.filter) && j.status !== state.filter) return false;
     if (needle && !`${j.title} ${j.company} ${j.location} ${j.tags}`.toLowerCase().includes(needle)) return false;
@@ -590,14 +696,16 @@ function drawRows() {
     stage: (a, b) => STAGE_ORDER[a.status] - STAGE_ORDER[b.status] || (b.updated_at || "").localeCompare(a.updated_at || ""),
   }[state.sort] || ((a, b) => (a.updated_at || "").localeCompare(b.updated_at || ""));
   rows.sort((a, b) => dir * cmp(a, b));
+  lastRows = rows;
 
   const tbody = document.getElementById("jobs");
   const count = document.getElementById("sheet-count");
   count.textContent = `${rows.length} job${rows.length === 1 ? "" : "s"}${rows.length !== state.jobs.length ? ` of ${state.jobs.length}` : ""}`;
   if (!rows.length) {
-    tbody.innerHTML = html`<tr class="none"><td colspan="${SHEET_COLS.length}">${state.filter === "tonight" && !state.q ? "Nothing on tonight's list. Tick jobs in the Tonight column, or use Pick saved jobs without a resume." : state.filter === "reposted" && !state.q ? "No reposted jobs. When a CSV import shows a saved job was posted again, it appears here." : state.filter === "archived" && !state.q ? "Nothing archived yet. Open a job and click Archive, or use Archive all closed jobs on the Closed filter." : `No jobs match.${state.filter !== "all" ? " Try the All filter." : ""}`}</td></tr>`;
+    tbody.innerHTML = html`<tr class="none"><td colspan="${SHEET_COLS.length}">${state.filter === "tonight" && !state.q ? "Nothing on tonight's list. Tick jobs in the Tonight column, or use Pick saved jobs without a resume." : state.filter === "reposted" && !state.q ? "No reposted jobs. When a CSV import shows a saved job was posted again, it appears here." : state.filter === "nodesc" && !state.q ? "Every job has a description." : state.filter === "archived" && !state.q ? "Nothing archived yet. Open a job and click Archive, or use Archive all closed jobs on the Closed filter." : `No jobs match.${state.filter !== "all" ? " Try the All filter." : ""}`}</td></tr>`;
     const m = document.getElementById("sheet-more");
     if (m) m.hidden = true;
+    drawSelBar();
     return;
   }
   // Drawing thousands of rows at once freezes the browser, so draw a page
@@ -624,6 +732,7 @@ function drawRows() {
   };
   btn.onclick = addPage;
   update();
+  drawSelBar();
   sheetObserver?.disconnect();
   if ("IntersectionObserver" in window) {
     sheetObserver = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) addPage(); }, { rootMargin: "600px" });
@@ -633,9 +742,186 @@ function drawRows() {
 
 let sheetObserver;
 
+let selAnchor = null;  // the row a Shift+click range starts from
+function fineMouse() { return matchMedia("(hover: hover) and (pointer: fine)").matches; }
+function tonightable(j) { return j.has_description && !j.archived_at && !j.queued; }
+function selectedJobs() { return (state.jobs || []).filter((j) => state.selected.has(j.id)); }
+
+// Click = select only this row (click it again to clear), Ctrl/Cmd+click = add or remove,
+// Shift+click = everything from the last clicked row to this one, like a spreadsheet.
+function selectRow(id, e) {
+  const ids = lastRows.map((j) => j.id);
+  if (e.shiftKey && selAnchor != null && ids.includes(selAnchor)) {
+    const a = ids.indexOf(selAnchor), b = ids.indexOf(id);
+    if (!(e.ctrlKey || e.metaKey)) state.selected.clear();
+    ids.slice(Math.min(a, b), Math.max(a, b) + 1).forEach((x) => state.selected.add(x));
+  } else if (e.ctrlKey || e.metaKey) {
+    if (state.selected.has(id)) state.selected.delete(id); else state.selected.add(id);
+    selAnchor = id;
+  } else {
+    const only = state.selected.size === 1 && state.selected.has(id);
+    state.selected.clear();
+    if (!only) state.selected.add(id);
+    selAnchor = id;
+  }
+  syncSel();
+}
+
+// Update the ticks, highlights and the bar without redrawing the table.
+function syncSel() {
+  document.querySelectorAll("#jobs tr[data-id]").forEach((tr) => {
+    const on = state.selected.has(Number(tr.dataset.id));
+    tr.classList.toggle("picked", on);
+    const cb = tr.querySelector("input[data-sel]");
+    if (cb) cb.checked = on;
+  });
+  drawSelBar();
+}
+
+function mergeJobs(list) {
+  list.forEach((u) => { const i = state.jobs.findIndex((x) => x.id === u.id); if (i >= 0) state.jobs[i] = { ...state.jobs[i], ...u }; });
+}
+
+async function bulkStage(status) {
+  const ids = selectedJobs().filter((j) => j.status !== status).map((j) => j.id);
+  if (!ids.length) return toast(`Already ${STAGE[status].label}.`);
+  try {
+    const r = await api("/jobs/stage", { json: { job_ids: ids, status } });
+    mergeJobs(r.jobs);
+    toast(`Moved ${r.changed} job${r.changed === 1 ? "" : "s"} to ${STAGE[status].label}`);
+  } catch (err) { toast(err.message, "error"); }
+  renderList(true);
+}
+
+async function bulkTonight(on) {
+  const pick = selectedJobs();
+  const ids = (on ? pick.filter(tonightable) : pick.filter((j) => j.queued)).map((j) => j.id);
+  if (!ids.length) return toast(on ? "None of these can go on tonight's list (they need a description and can't be archived)." : "None of these are on tonight's list.");
+  try {
+    const r = await api("/nightly/queue", { json: { job_ids: ids, queued: on } });
+    state.jobs.forEach((j) => { if (ids.includes(j.id)) j.queued = on; });
+    const skipped = on ? pick.length - ids.length - pick.filter((j) => j.queued).length : 0;
+    toast(`${on ? "Added" : "Removed"} ${r.changed} ${on ? "to" : "from"} tonight's list${skipped > 0 ? `. ${skipped} skipped (no description or archived).` : ""}`);
+  } catch (err) { toast(err.message, "error"); }
+  renderList(true);
+}
+
+async function bulkArchive(archived) {
+  const ids = selectedJobs().filter((j) => !!j.archived_at !== archived).map((j) => j.id);
+  if (!ids.length) return;
+  try {
+    const r = await api("/jobs/archive", { json: { job_ids: ids, archived } });
+    const at = new Date().toISOString();
+    state.jobs.forEach((j) => { if (ids.includes(j.id)) { j.archived_at = archived ? at : null; if (archived) j.queued = false; } });
+    toast(`${archived ? "Archived" : "Unarchived"} ${r.changed} job${r.changed === 1 ? "" : "s"}${archived ? ". Find them under Archived." : ""}`);
+    state.selected.clear();
+  } catch (err) { toast(err.message, "error"); }
+  renderList(true);
+}
+
+async function bulkFill() {
+  const ids = selectedJobs().filter(fillable).map((j) => j.id);
+  const updated = await fillJobs(ids);
+  mergeJobs(updated);
+  updated.forEach((u) => state.selected.delete(u.id));
+  if (updated.length) renderList(true);
+}
+
+// Right-click menu for the selected rows.
+function closeRowMenu() { document.querySelector(".ctx-menu")?.remove(); }
+function openRowMenu(x, y) {
+  closeRowMenu();
+  const pick = selectedJobs();
+  if (!pick.length) return;
+  const n = pick.length;
+  const fill = pick.filter(fillable).length, tnAdd = pick.filter(tonightable).length, tnRm = pick.filter((j) => j.queued).length;
+  const arch = pick.filter((j) => j.archived_at).length;
+  const one = n === 1 ? pick[0] : null;
+  const m = document.createElement("div");
+  m.className = "ctx-menu";
+  m.setAttribute("role", "menu");
+  m.innerHTML = html`
+    <p class="ctx-h">${one ? one.title : `${n} jobs selected`}</p>
+    ${one ? raw('<button role="menuitem" data-act="open">Open job</button><hr>') : ""}
+    <p class="ctx-sub">Move to</p>
+    ${STAGES.map((st) => raw(html`<button role="menuitem" data-act="stage" data-st="${st.id}" style="--c:${raw(stageColor(st.id))}"><span class="dot"></span>${st.label}${pick.every((j) => j.status === st.id) ? raw(' <span class="ctx-cur">current</span>') : ""}</button>`))}
+    <hr>
+    ${fill ? raw(html`<button role="menuitem" data-act="fill">Fill in missing details${n > 1 ? ` (${fill})` : ""}</button>`) : ""}
+    ${tnAdd ? raw(html`<button role="menuitem" data-act="tn-add">Add to tonight's list${n > 1 ? ` (${tnAdd})` : ""}</button>`) : ""}
+    ${tnRm ? raw(html`<button role="menuitem" data-act="tn-rm">Remove from tonight's list${n > 1 ? ` (${tnRm})` : ""}</button>`) : ""}
+    ${arch < n ? raw(html`<button role="menuitem" data-act="archive">Archive${n > 1 ? ` (${n - arch})` : ""}</button>`) : ""}
+    ${arch ? raw(html`<button role="menuitem" data-act="unarchive">Unarchive${n > 1 ? ` (${arch})` : ""}</button>`) : ""}
+    <hr>
+    <button role="menuitem" data-act="clear">Clear selection</button>`;
+  document.body.append(m);
+  const r = m.getBoundingClientRect();
+  m.style.left = `${Math.max(8, Math.min(x, innerWidth - r.width - 8))}px`;
+  m.style.top = `${Math.max(8, Math.min(y, innerHeight - r.height - 8))}px`;
+  m.querySelector("button")?.focus();
+  m.addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-act]");
+    if (!b) return;
+    closeRowMenu();
+    const act = b.dataset.act;
+    if (act === "open") location.hash = `#/job/${one.id}`;
+    else if (act === "stage") bulkStage(b.dataset.st);
+    else if (act === "fill") bulkFill();
+    else if (act === "tn-add") bulkTonight(true);
+    else if (act === "tn-rm") bulkTonight(false);
+    else if (act === "archive") bulkArchive(true);
+    else if (act === "unarchive") bulkArchive(false);
+    else if (act === "clear") { state.selected.clear(); syncSel(); }
+  });
+}
+document.addEventListener("mousedown", (e) => { if (!e.target.closest(".ctx-menu")) closeRowMenu(); });
+addEventListener("scroll", closeRowMenu, { passive: true });
+addEventListener("resize", closeRowMenu);
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (document.querySelector(".ctx-menu")) return closeRowMenu();
+  if (state.selected.size && document.getElementById("jobs") && !document.querySelector("dialog[open]")) { state.selected.clear(); syncSel(); }
+});
+
+// A job the Fill in action can help: it has a link and no description.
+function fillable(j) { return !!j.url && !j.has_description && !looksLikeUrl(j.title); }
+
+// Show the bulk-action bar while jobs are ticked, and keep the select-all box in step.
+function drawSelBar() {
+  const bar = document.getElementById("sel-bar");
+  if (!bar) return;
+  const known = new Set(state.jobs.map((j) => j.id));
+  [...state.selected].forEach((id) => { if (!known.has(id)) state.selected.delete(id); });
+  const picked = state.jobs.filter((j) => state.selected.has(j.id));
+  bar.hidden = !picked.length;
+  bar.querySelector("#sel-n").textContent = picked.length;
+  const off = picked.filter((j) => !lastRows.includes(j)).length;
+  bar.querySelector("#sel-what").textContent = `job${picked.length === 1 ? "" : "s"} selected${off ? ` (${off} not in this view)` : ""}`;
+  const arch = picked.filter((j) => j.archived_at).length;
+  const canFill = picked.filter(fillable).length;
+  const tnAdd = picked.filter(tonightable).length, tnRm = picked.filter((j) => j.queued).length;
+  bar.querySelector("#sel-tn-add").hidden = !tnAdd;
+  bar.querySelector("#sel-tn-add").textContent = `Tonight ${tnAdd}`;
+  bar.querySelector("#sel-tn-rm").hidden = !tnRm;
+  bar.querySelector("#sel-tn-rm").textContent = `Off tonight ${tnRm}`;
+  bar.querySelector("#sel-fill").hidden = !canFill;
+  bar.querySelector("#sel-fill").textContent = `Fill in ${canFill}`;
+  bar.querySelector("#sel-fill").title = "Read the missing description from each job's posting";
+  bar.querySelector("#sel-archive").hidden = arch === picked.length;
+  bar.querySelector("#sel-unarchive").hidden = arch === 0;
+  bar.querySelector("#sel-archive").textContent = `Archive ${picked.length - arch}`;
+  bar.querySelector("#sel-unarchive").textContent = `Unarchive ${arch}`;
+  const all = document.getElementById("sel-all");
+  if (all) {
+    const inView = lastRows.filter((j) => state.selected.has(j.id)).length;
+    all.checked = inView > 0 && inView === lastRows.length;
+    all.indeterminate = inView > 0 && inView < lastRows.length;
+  }
+}
+
 function rowHtml(j) {
   return html`
-    <tr data-id="${j.id}" style="--c:${raw(stageColor(j.status))}">
+    <tr data-id="${j.id}" class="${state.selected.has(j.id) ? "picked" : ""}" style="--c:${raw(stageColor(j.status))}">
+      <td class="c-sel"><input type="checkbox" data-sel="${j.id}" ${state.selected.has(j.id) ? "checked" : ""} aria-label="Select ${j.title}"></td>
       <td class="c-stage"><span class="st-dot" aria-hidden="true"></span><select data-stage="${j.id}" aria-label="Stage for ${j.title}">
         ${STAGES.map((s) => raw(html`<option value="${s.id}" ${s.id === j.status ? "selected" : ""}>${s.label}</option>`))}
       </select></td>
