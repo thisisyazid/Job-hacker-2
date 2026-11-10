@@ -490,3 +490,42 @@ def test_csv_link_only_rows_are_imported_and_filled(c, monkeypatch):
     f = c.post(f"/api/jobs/{job['id']}/refresh", json={"engine": "none"}).json()
     assert f["status"] == "updated" and f["filled"][0] == "title"
     assert c.get(f"/api/jobs/{job['id']}").json()["title"] == "Real Title"
+
+
+def test_nightly_jobs_per_night_and_stop_time(c):
+    from app import nightly
+    ids = [c.post("/api/jobs", json={"title": f"Night {i}", "description": "Desc"}).json()["id"] for i in range(3)]
+    c.post("/api/nightly/queue", json={"job_ids": ids, "queued": True})
+    n = c.patch("/api/nightly", json={"max_jobs": 2, "stop_at": "07:00"}).json()
+    assert n["settings"]["max_jobs"] == 2 and n["settings"]["stop_at"] == "07:00"
+    p = n["pending"]
+    assert p["jobs"] == 2 and p["limit"] == 2 and p["ready"] >= 3
+    assert c.patch("/api/nightly", json={"max_jobs": 0}).status_code == 422
+    assert c.patch("/api/nightly", json={"stop_at": "25:00"}).status_code == 422
+    assert c.patch("/api/nightly", json={"stop_at": ""}).json()["settings"]["stop_at"] == ""
+    d = nightly._deadline("07:00")
+    import datetime as dt
+    from zoneinfo import ZoneInfo
+    from app import config
+    assert d > dt.datetime.now(ZoneInfo(config.TIMEZONE)) and nightly._deadline("") is None
+    c.patch("/api/nightly", json={"max_jobs": 40})
+    c.post("/api/nightly/queue", json={"job_ids": ids, "queued": False})
+
+
+def test_nightly_run_stops_at_stop_time(c, monkeypatch):
+    import datetime as dt
+    from app import ai, nightly
+    c.post("/api/personas", json={"name": "Night CV", "resume_text": "My resume", "is_default": True})
+    ids = [c.post("/api/jobs", json={"title": f"Stopper {i}", "description": "Desc"}).json()["id"] for i in range(2)]
+    c.post("/api/nightly/queue", json={"job_ids": ids, "queued": True})
+    c.patch("/api/nightly", json={"do_fit": False, "do_cover": False, "do_resume": True})
+    monkeypatch.setattr(ai, "resolve", lambda e: "claude")
+    monkeypatch.setattr(ai, "tailor_resume", lambda *a, **k: "# CV")
+    # already past the stop time: the run makes nothing and leaves the jobs on the list
+    monkeypatch.setattr(nightly, "_deadline", lambda s: dt.datetime(2000, 1, 1, tzinfo=dt.timezone.utc))
+    uid = c.get("/api/session").json()["user"]["id"]
+    nightly.run_for_user(uid, "manual")
+    run = c.get("/api/nightly").json()["runs"][0]
+    assert run["status"] == "stopped" and run["made"] == 0 and "Stopped at" in run["log"][-1]["note"]
+    assert all(j["queued"] for j in c.get("/api/jobs").json() if j["id"] in ids)
+    c.post("/api/nightly/queue", json={"job_ids": ids, "queued": False})

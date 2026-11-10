@@ -208,6 +208,8 @@ class NightlyIn(BaseModel):
     do_resume: Optional[bool] = None
     do_fit: Optional[bool] = None
     do_cover: Optional[bool] = None
+    max_jobs: Optional[int] = Field(default=None, ge=1, le=2000)
+    stop_at: Optional[str] = Field(default=None, pattern=r"^(([01]\d|2[0-3]):[0-5]\d)?$")
 
 
 class DocPatch(BaseModel):
@@ -662,7 +664,8 @@ def _nightly_out(db: Session, user: User) -> dict:
     s = nightly.settings_for(db, user.id)
     runs = db.query(NightlyRun).filter(NightlyRun.user_id == user.id).order_by(NightlyRun.id.desc()).limit(5).all()
     return {
-        "settings": {k: getattr(s, k) for k in ("enabled", "run_time", "engine", "do_resume", "do_fit", "do_cover")},
+        "settings": {k: getattr(s, k) for k in ("enabled", "run_time", "engine", "do_resume", "do_fit", "do_cover",
+                                                         "max_jobs", "stop_at")},
         "timezone": config.TIMEZONE,
         "running": nightly.is_running(),
         "pending": nightly.summary(db, user.id, s),

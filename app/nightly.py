@@ -69,10 +69,11 @@ def plan(db, user_id: int, s: NightlySetting) -> list[tuple[Job, str]]:
         if s.do_cover:
             tasks.append((j, "cover_letter"))
     # cap by number of distinct jobs, not tasks
+    limit = s.max_jobs or config.NIGHTLY_MAX_JOBS
     keep, seen = [], []
     for j, t in tasks:
         if j.id not in seen:
-            if len(seen) >= config.NIGHTLY_MAX_JOBS:
+            if len(seen) >= limit:
                 break
             seen.append(j.id)
         keep.append((j, t))
@@ -83,6 +84,11 @@ def summary(db, user_id: int, s: NightlySetting) -> dict:
     p = plan(db, user_id, s)
     return {
         "queued": db.query(Job).filter(Job.user_id == user_id, Job.queued.is_(True), Job.archived_at.is_(None)).count(),
+        # picked jobs a run could work on (they have a description), and the per-run limit
+        "ready": db.query(Job).filter(Job.user_id == user_id, Job.queued.is_(True), Job.archived_at.is_(None),
+                                      Job.description != "").count(),
+        "limit": s.max_jobs or config.NIGHTLY_MAX_JOBS,
+        "stop_at": s.stop_at or "",
         "jobs": len({j.id for j, _ in p}),
         "resume": sum(t == "resume" for _, t in p),
         "fit": sum(t == "fit" for _, t in p),
@@ -91,6 +97,19 @@ def summary(db, user_id: int, s: NightlySetting) -> dict:
 
 
 TASK_LABEL = {"resume": "Tailored resume", "fit": "Fit check", "cover_letter": "Cover letter"}
+
+
+def _deadline(stop_at: str | None) -> dt.datetime | None:
+    """The next time it's stop_at (HH:MM, local), or None when there's no limit."""
+    if not stop_at:
+        return None
+    try:
+        h, m = (int(x) for x in stop_at.split(":"))
+    except ValueError:
+        return None
+    now_l = dt.datetime.now(ZoneInfo(config.TIMEZONE))
+    d = now_l.replace(hour=h, minute=m, second=0, microsecond=0)
+    return d if d > now_l else d + dt.timedelta(days=1)
 
 
 def run_for_user(user_id: int, trigger: str = "schedule") -> int | None:
@@ -138,8 +157,15 @@ def run_for_user(user_id: int, trigger: str = "schedule") -> int | None:
             remaining = {}
             for job, _ in tasks:
                 remaining[job.id] = remaining.get(job.id, 0) + 1
+            deadline = _deadline(s.stop_at)
             for job, task in tasks:
                 if _stop.is_set():
+                    save("stopped")
+                    return run.id
+                if deadline and dt.datetime.now(ZoneInfo(config.TIMEZONE)) >= deadline:
+                    log.info("overnight run %s reached the %s stop time with %d task(s) left", run.id, s.stop_at,
+                             len(tasks) - len(entries))
+                    entries.append({"ok": True, "note": f"Stopped at {s.stop_at}, as set in Settings. The rest stay on tonight's list."})
                     save("stopped")
                     return run.id
                 entry = {"job_id": job.id, "title": job.title, "company": job.company, "task": task}
