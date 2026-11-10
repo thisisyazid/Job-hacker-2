@@ -823,6 +823,9 @@ async function renderJob(id) {
   const personas = state.session.ai_enabled ? await api("/personas") : [];
   const facts = [["Location", j.location], ["Salary", j.salary], ["Job type", j.employment_type], ["Posted", fmtPosted(j.posted_date, true) + (j.reposted_at ? (j.first_posted ? ` (reposted; first posted ${fmtPosted(j.first_posted, true)})` : " (reposted)") : "")], ["Saved", longDate(j.created_at)]].filter(([, v]) => v);
   const desc = j.description || "";
+  const FILLABLE = { description: "description", company: "company", location: "location", salary: "salary", employment_type: "job type", posted_date: "posted date" };
+  const missing = Object.keys(FILLABLE).filter((k) => !(j[k] || "").trim());
+  const canFill = !!j.url && missing.length > 0;
 
   setView(html`
     <article>
@@ -833,6 +836,7 @@ async function renderJob(id) {
         <dl class="facts">${facts.map(([k, v]) => raw(html`<div><dt>${k}</dt><dd>${v}</dd></div>`))}</dl>
         <div class="row">
           ${j.url ? raw(html`<a class="btn" href="${j.url}" target="_blank" rel="noopener">Open posting ${raw(icon.ext)}</a>`) : ""}
+          ${canFill ? raw(html`<button class="btn" data-fill title="Missing: ${missing.map((k) => FILLABLE[k]).join(", ")}">Fill in missing details</button>`) : ""}
           <button class="btn" id="edit">Edit details</button>
         </div>
       </header>
@@ -883,7 +887,8 @@ async function renderJob(id) {
         <h2 id="h-desc">Job description</h2>
         ${desc ? raw(html`<div class="prose ${desc.length > 1400 ? "clamped" : ""}" id="desc">${desc}</div>
           ${desc.length > 1400 ? raw('<button class="btn btn-ghost" id="more">Show the full description</button>') : ""}`)
-          : raw('<div class="callout"><p>No description saved yet. Use <strong>Edit details</strong> to paste it in, so the fit check and tailoring have something to work from.</p></div>')}
+          : raw(html`<div class="callout"><p>No description saved yet. ${j.url ? "Read it from the posting, or use" : "Use"} <strong>Edit details</strong> to paste it in, so the fit check and tailoring have something to work from.</p>
+            ${j.url ? raw('<div class="row"><button class="btn btn-primary" data-fill>Fill in from the posting</button></div>') : ""}</div>`)}
       </section>
 
       <section class="section">
@@ -902,6 +907,22 @@ async function renderJob(id) {
   }));
 
   document.getElementById("edit").addEventListener("click", () => renderEdit(j));
+  // Re-read the posting and fill only the empty fields; nothing already there is changed.
+  $main.querySelectorAll("[data-fill]").forEach((b) => b.addEventListener("click", async () => {
+    const buttons = $main.querySelectorAll("[data-fill]");
+    buttons.forEach((x) => { x.disabled = true; x.dataset.label = x.textContent; x.textContent = "Reading the posting…"; });
+    try {
+      const r = await api(`/jobs/${id}/refresh`, { method: "POST", json: { engine: currentEngine() } });
+      if (r.status === "updated") {
+        state.jobs = null;
+        toast(`Filled in: ${r.filled.map((k) => FILLABLE[k] || k.replace("_", " ")).join(", ")}`);
+        return renderJob(id);
+      }
+      toast(r.status === "unchanged" ? "Nothing new on the posting. Paste the details with Edit details instead."
+        : `${r.reason} Open the posting, copy the text and paste it with Edit details.`, r.status === "failed" ? "error" : "");
+    } catch (e) { toast(e.message, "error"); }
+    buttons.forEach((x) => { x.disabled = false; x.textContent = x.dataset.label; });
+  }));
   document.getElementById("more")?.addEventListener("click", (e) => {
     document.getElementById("desc").classList.remove("clamped"); e.target.remove();
   });
