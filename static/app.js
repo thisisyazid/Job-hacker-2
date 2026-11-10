@@ -577,6 +577,11 @@ async function renderList(keep = false) {
     const tr = e.target.closest("tr[data-id]");
     if (tr) location.hash = `#/job/${tr.dataset.id}`;
   });
+  tbody.addEventListener("auxclick", (e) => {  // middle-click a row: open the job in a new tab
+    if (e.button !== 1 || e.target.closest("a, select, input, button")) return;
+    const tr = e.target.closest("tr[data-id]");
+    if (tr) { e.preventDefault(); window.open(jobLink(Number(tr.dataset.id)), "_blank", "noopener"); }
+  });
   tbody.addEventListener("mousedown", (e) => {  // no text highlighting on shift-click
     if (e.shiftKey && !e.target.closest("input, select, textarea")) e.preventDefault();
   });
@@ -586,7 +591,7 @@ async function renderList(keep = false) {
     e.preventDefault();
     const id = Number(tr.dataset.id);
     if (!state.selected.has(id)) { state.selected.clear(); state.selected.add(id); selAnchor = id; syncSel(); }
-    openRowMenu(e.clientX, e.clientY);
+    openRowMenu(e.clientX, e.clientY, id);
   });
   tbody.addEventListener("change", (e) => {
     const pick = e.target.closest("input[data-sel]");
@@ -859,7 +864,9 @@ async function bulkFill() {
 
 // Right-click menu for the selected rows.
 function closeRowMenu() { document.querySelector(".ctx-menu")?.remove(); }
-function openRowMenu(x, y) {
+function jobLink(id) { return `${location.origin}${location.pathname}#/job/${id}`; }
+
+function openRowMenu(x, y, rowId) {
   closeRowMenu();
   const pick = selectedJobs();
   if (!pick.length) return;
@@ -867,12 +874,17 @@ function openRowMenu(x, y) {
   const fill = pick.filter(fillable).length, tnAdd = pick.filter(tonightable).length, tnRm = pick.filter((j) => j.queued).length;
   const arch = pick.filter((j) => j.archived_at).length;
   const one = n === 1 ? pick[0] : null;
+  const row = state.jobs.find((j) => j.id === rowId) || one;  // the row that was right-clicked
   const m = document.createElement("div");
   m.className = "ctx-menu";
   m.setAttribute("role", "menu");
   m.innerHTML = html`
     <p class="ctx-h">${one ? one.title : `${n} jobs selected`}</p>
-    ${one ? raw('<button role="menuitem" data-act="open">Open job</button><hr>') : ""}
+    ${row ? raw(html`${n > 1 ? raw(html`<p class="ctx-sub">${row.title}</p>`) : ""}
+      <button role="menuitem" data-act="open">Open job</button>
+      <button role="menuitem" data-act="open-tab">Open in new tab</button>
+      <button role="menuitem" data-act="open-window">Open in new window</button>
+      ${row.url ? raw('<button role="menuitem" data-act="open-posting">Open job posting ↗</button>') : ""}<hr>`) : ""}
     <p class="ctx-sub">Move to</p>
     ${STAGES.map((st) => raw(html`<button role="menuitem" data-act="stage" data-st="${st.id}" style="--c:${raw(stageColor(st.id))}"><span class="dot"></span>${st.label}${pick.every((j) => j.status === st.id) ? raw(' <span class="ctx-cur">current</span>') : ""}</button>`))}
     <hr>
@@ -893,7 +905,10 @@ function openRowMenu(x, y) {
     if (!b) return;
     closeRowMenu();
     const act = b.dataset.act;
-    if (act === "open") location.hash = `#/job/${one.id}`;
+    if (act === "open") location.hash = `#/job/${row.id}`;
+    else if (act === "open-tab") window.open(jobLink(row.id), "_blank", "noopener");
+    else if (act === "open-window") window.open(jobLink(row.id), "_blank", "noopener,width=1180,height=900");
+    else if (act === "open-posting") window.open(row.url, "_blank", "noopener");
     else if (act === "stage") bulkStage(b.dataset.st);
     else if (act === "fill") bulkFill();
     else if (act === "tn-add") bulkTonight(true);
