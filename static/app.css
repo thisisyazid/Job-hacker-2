@@ -276,6 +276,9 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .c-job .sub { display: none; color: var(--muted); font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .c-job .m-tags { display: none; }
 .flag { display: inline-block; font-size: 13px; font-weight: 700; padding: 1px 7px; border-radius: 5px; margin: 2px 4px 0 0; white-space: nowrap; }
+.flag-fill { border: 0; font-family: inherit; line-height: inherit; cursor: pointer; }
+.flag-fill:hover { text-decoration: underline; }
+.flag-fill:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .flag.ok { color: var(--st-interviewing); background: color-mix(in srgb, var(--st-interviewing) 13%, transparent); }
 .flag.night { color: var(--accent); background: var(--accent-soft); }
 .flag.rp { color: var(--repost); background: color-mix(in srgb, var(--repost) 13%, transparent); }
