@@ -108,6 +108,11 @@ function fmtPosted(s, long = false) {
   if (d.getFullYear() !== new Date().getFullYear()) return d.toLocaleDateString(undefined, { month: "short", year: "numeric" });
   return d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
 }
+// A UTC timestamp as the viewer's local calendar day (YYYY-MM-DD).
+function localDay(iso) {
+  const d = new Date(iso);
+  return isNaN(d) ? "" : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
 function longDate(iso) {
   return iso ? new Date(iso).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : "";
 }
@@ -433,7 +438,7 @@ async function renderList(keep = false) {
   $main.querySelectorAll("[data-sort]").forEach((b) => b.addEventListener("click", () => {
     const k = b.dataset.sort;
     if (state.sort === k) state.dir = state.dir === "asc" ? "desc" : "asc";
-    else { state.sort = k; state.dir = ["updated", "fit", "posted", "tonight"].includes(k) ? "desc" : "asc"; }
+    else { state.sort = k; state.dir = ["updated", "fit", "posted", "applied", "tonight"].includes(k) ? "desc" : "asc"; }
     localSet("jh.sort", state.sort); localSet("jh.dir", state.dir);
     state.shown = 0;
     renderList(true);
@@ -531,6 +536,7 @@ const SHEET_COLS = [
   { cls: "c-res", label: "Resume", sort: "resume" },
   { cls: "c-tn", label: "Tonight", sort: "tonight" },
   { cls: "c-post num", label: "Posted", sort: "posted" },
+  { cls: "c-app num", label: "Applied", sort: "applied" },
   { cls: "c-upd num", label: "Updated", sort: "updated" },
 ];
 const STAGE_ORDER = Object.fromEntries(STAGES.map((s, i) => [s.id, i]));
@@ -552,6 +558,8 @@ function drawRows() {
     fit: (a, b) => (a.fit_score ?? -1) - (b.fit_score ?? -1),
     // undated jobs sort as oldest, so newest postings come first
     posted: (a, b) => (isoDate(a.posted_date) || "0").localeCompare(isoDate(b.posted_date) || "0"),
+    // not applied yet sorts as oldest, so the latest applications come first
+    applied: (a, b) => (a.applied_at || "0").localeCompare(b.applied_at || "0"),
     company: (a, b) => txt(a.company, b.company) || txt(a.title, b.title),
     title: (a, b) => txt(a.title, b.title),
     resume: (a, b) => (a.has_resume - b.has_resume) || (b.updated_at || "").localeCompare(a.updated_at || ""),
@@ -615,7 +623,7 @@ function rowHtml(j) {
           ? raw(html`<button type="button" class="flag warn flag-fill" data-fillrow="${j.id}" title="Read the description from the posting">No description · Fill in</button>`)
           : raw('<span class="flag warn" title="No link saved, so it can\'t be filled in automatically">No description</span>')}
         ${j.reposted_at ? raw(html`<span class="flag rp" title="${j.first_posted ? `First posted ${fmtPosted(j.first_posted, true)}` : "Posted again"}">Reposted</span>`) : ""}
-        <span class="m-tags">${j.has_resume ? raw('<span class="flag ok">Resume</span>') : ""}</span>
+        <span class="m-tags">${j.has_resume ? raw('<span class="flag ok">Resume</span>') : ""}${j.applied_at ? raw(html`<span class="m-applied">Applied ${fmtPosted(localDay(j.applied_at))}</span>`) : ""}</span>
       </td>
       <td class="c-co">${j.company || ""}</td>
       <td class="c-loc">${j.location || ""}</td>
@@ -623,6 +631,7 @@ function rowHtml(j) {
       <td class="c-res">${j.has_resume ? raw('<span class="flag ok">Ready</span>') : raw('<span class="nil">–</span>')}</td>
       <td class="c-tn"><input type="checkbox" data-q="${j.id}" ${j.queued ? "checked" : ""} ${j.has_description ? "" : "disabled"} aria-label="Tonight's list: ${j.title}" title="${j.has_description ? "Make overnight" : "Needs a description first"}"></td>
       <td class="c-post num" title="${j.posted_date ? `Posted ${fmtPosted(j.posted_date, true)}${j.first_posted ? `, first posted ${fmtPosted(j.first_posted, true)}` : ""}` : "Posting date unknown"}">${j.posted_date ? fmtPosted(j.posted_date) : raw('<span class="nil">–</span>')}</td>
+      <td class="c-app num" title="${j.applied_at ? `Moved to Applied ${longDate(j.applied_at)}` : "Not applied yet"}">${j.applied_at ? fmtPosted(localDay(j.applied_at)) : raw('<span class="nil">–</span>')}</td>
       <td class="c-upd num" title="Changed in the app ${longDate(j.updated_at)}">${ago(j.updated_at)}</td>
     </tr>`;
 }
