@@ -17,7 +17,9 @@ const state = {
   sort: localGet("jh.sort") || "updated",
   dir: localGet("jh.dir") || "desc",
   q: "",
+  shown: 0,  // how many rows of the job table are drawn; more are added as you scroll
 };
+const PAGE = 100;
 
 const $main = document.getElementById("main");
 
@@ -350,17 +352,23 @@ async function renderList(keep = false) {
   if (!jobs.length) return;
   $main.querySelectorAll("[data-filter]").forEach((b) => b.addEventListener("click", () => {
     state.filter = b.dataset.filter;
+    state.shown = 0;
     localSet("jh.filter", state.filter);
     renderList(true);
   }));
   const q = document.getElementById("q");
-  q.addEventListener("input", () => { state.q = q.value; drawRows(); });
+  let qTimer;
+  q.addEventListener("input", () => {
+    clearTimeout(qTimer);
+    qTimer = setTimeout(() => { state.q = q.value; state.shown = 0; drawRows(); scrollTo(0, 0); }, 180);
+  });
   if (focusQ) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); }
   $main.querySelectorAll("[data-sort]").forEach((b) => b.addEventListener("click", () => {
     const k = b.dataset.sort;
     if (state.sort === k) state.dir = state.dir === "asc" ? "desc" : "asc";
     else { state.sort = k; state.dir = ["updated", "fit", "posted", "tonight"].includes(k) ? "desc" : "asc"; }
     localSet("jh.sort", state.sort); localSet("jh.dir", state.dir);
+    state.shown = 0;
     renderList(true);
   }));
   const tbody = document.getElementById("jobs");
@@ -479,9 +487,45 @@ function drawRows() {
   count.textContent = `${rows.length} job${rows.length === 1 ? "" : "s"}${rows.length !== state.jobs.length ? ` of ${state.jobs.length}` : ""}`;
   if (!rows.length) {
     tbody.innerHTML = html`<tr class="none"><td colspan="${SHEET_COLS.length}">${state.filter === "tonight" && !state.q ? "Nothing on tonight's list. Tick jobs in the Tonight column, or use Pick saved jobs without a resume." : state.filter === "reposted" && !state.q ? "No reposted jobs. When a CSV import shows a saved job was posted again, it appears here." : `No jobs match.${state.filter !== "all" ? " Try the All filter." : ""}`}</td></tr>`;
+    const m = document.getElementById("sheet-more");
+    if (m) m.hidden = true;
     return;
   }
-  tbody.innerHTML = rows.map((j) => html`
+  // Drawing thousands of rows at once freezes the browser, so draw a page
+  // and add the next one as the end of the table scrolls into view.
+  state.shown = Math.min(rows.length, Math.max(state.shown, PAGE));
+  tbody.innerHTML = rows.slice(0, state.shown).map(rowHtml).join("");
+  let more = document.getElementById("sheet-more");
+  if (!more) {
+    count.insertAdjacentHTML("beforebegin", '<div id="sheet-more" class="sheet-more"><button class="btn btn-ghost btn-s" type="button"></button></div>');
+    more = document.getElementById("sheet-more");
+  }
+  const btn = more.querySelector("button");
+  const update = () => {
+    const left = rows.length - state.shown;
+    more.hidden = left <= 0;
+    btn.textContent = `Show ${Math.min(PAGE, left)} more (${left} not shown)`;
+  };
+  const addPage = () => {
+    if (state.shown >= rows.length) return;
+    const next = rows.slice(state.shown, state.shown + PAGE);
+    state.shown += next.length;
+    tbody.insertAdjacentHTML("beforeend", next.map(rowHtml).join(""));
+    update();
+  };
+  btn.onclick = addPage;
+  update();
+  sheetObserver?.disconnect();
+  if ("IntersectionObserver" in window) {
+    sheetObserver = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) addPage(); }, { rootMargin: "600px" });
+    sheetObserver.observe(more);
+  }
+}
+
+let sheetObserver;
+
+function rowHtml(j) {
+  return html`
     <tr data-id="${j.id}" style="--c:${raw(stageColor(j.status))}">
       <td class="c-stage"><span class="st-dot" aria-hidden="true"></span><select data-stage="${j.id}" aria-label="Stage for ${j.title}">
         ${STAGES.map((s) => raw(html`<option value="${s.id}" ${s.id === j.status ? "selected" : ""}>${s.label}</option>`))}
@@ -500,7 +544,7 @@ function drawRows() {
       <td class="c-tn"><input type="checkbox" data-q="${j.id}" ${j.queued ? "checked" : ""} ${j.has_description ? "" : "disabled"} aria-label="Tonight's list: ${j.title}" title="${j.has_description ? "Make overnight" : "Needs a description first"}"></td>
       <td class="c-post num" title="${j.posted_date ? `Posted ${fmtPosted(j.posted_date, true)}${j.first_posted ? `, first posted ${fmtPosted(j.first_posted, true)}` : ""}` : "Posting date unknown"}">${j.posted_date ? fmtPosted(j.posted_date) : raw('<span class="nil">–</span>')}</td>
       <td class="c-upd num" title="Changed in the app ${longDate(j.updated_at)}">${ago(j.updated_at)}</td>
-    </tr>`).join("");
+    </tr>`;
 }
 
 // ---------- add ----------

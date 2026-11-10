@@ -284,6 +284,8 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   font: 750 15px/1 var(--font-head); font-variant-numeric: tabular-nums; color: var(--surface); background: var(--fc); }
 .nil { color: var(--line); }
 .sheet-count { margin: 8px 2px 0; font-size: 15px; }
+.sheet-more { display: flex; justify-content: center; margin: 12px 0 0; }
+.sheet-more[hidden] { display: none; }
 
 .c-job .t > span:last-child { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .dead-callout { display: flex; align-items: center; justify-content: space-between; gap: 8px 16px; flex-wrap: wrap; padding: 10px 14px; margin-bottom: 12px; }
