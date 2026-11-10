@@ -134,6 +134,8 @@ class NightlySetting(Base):
     do_resume: Mapped[bool] = mapped_column(Boolean, default=True)
     do_fit: Mapped[bool] = mapped_column(Boolean, default=True)
     do_cover: Mapped[bool] = mapped_column(Boolean, default=False)
+    max_jobs: Mapped[int] = mapped_column(Integer, default=40, server_default="40")  # jobs per run
+    stop_at: Mapped[str] = mapped_column(String(5), default="", server_default="")  # HH:MM: finish by then, "" = no limit
     last_run_date: Mapped[str] = mapped_column(String(10), default="")  # YYYY-MM-DD, avoids double runs
 
 
@@ -156,6 +158,7 @@ class NightlyRun(Base):
 # never alters existing ones, so add missing columns here (SQLite-safe).
 _ADDED_COLUMNS = {
     "documents": {"engine": "VARCHAR(120) DEFAULT ''", "nightly": "BOOLEAN DEFAULT 0"},
+    "nightly_settings": {"max_jobs": "INTEGER DEFAULT 40", "stop_at": "VARCHAR(5) DEFAULT ''"},
     "jobs": {"queued": "BOOLEAN DEFAULT 0", "reposted_at": "DATETIME", "first_posted": "VARCHAR(50) DEFAULT ''",
              "archived_at": "DATETIME"},
 }

@@ -1771,6 +1771,13 @@ async function drawNightly(box) {
           ${engineOk ? "" : raw(html`<p class="hint warn-text">${all[st.engine]?.reason || "Not available right now."}</p>`)}
         </div>
       </div>
+      <div class="grid2" style="margin-top:4px">
+        <div class="field"><label for="n-max">Jobs per night</label><input id="n-max" type="number" min="1" max="2000" step="1" value="${st.max_jobs}">
+          <p class="hint">About 2 minutes a job with the local model, under a minute with Claude.</p></div>
+        <div class="field"><label for="n-stop-at">Stop by <span class="hint" style="display:inline">(optional)</span></label>
+          <div class="row" style="gap:6px;flex-wrap:nowrap"><input id="n-stop-at" type="time" value="${st.stop_at || ""}" step="300">${st.stop_at ? raw('<button class="btn btn-ghost btn-s" id="n-stop-clear" type="button">Clear</button>') : ""}</div>
+          <p class="hint">${st.stop_at ? `Finishes the job it's on, then stops at ${st.stop_at}. The rest wait for the next night.` : "Leave empty to keep going until the night's jobs are done."}</p></div>
+      </div>
       <fieldset class="checks"><legend class="label">Make</legend>
         <label><input type="checkbox" data-opt="do_resume" ${st.do_resume ? "checked" : ""}> Tailored resumes</label>
         <label><input type="checkbox" data-opt="do_fit" ${st.do_fit ? "checked" : ""}> Fit checks</label>
@@ -1796,6 +1803,12 @@ async function drawNightly(box) {
   box.querySelector("#n-on").addEventListener("change", (e) => save({ enabled: e.target.checked }));
   box.querySelector("#n-time").addEventListener("change", (e) => e.target.value && save({ run_time: e.target.value }));
   box.querySelector("#n-engine").addEventListener("change", (e) => save({ engine: e.target.value }));
+  box.querySelector("#n-max").addEventListener("change", (e) => {
+    const v = Math.round(Number(e.target.value));
+    if (v >= 1 && v <= 2000) save({ max_jobs: v }); else { toast("Pick a number from 1 to 2000.", "error"); e.target.value = st.max_jobs; }
+  });
+  box.querySelector("#n-stop-at").addEventListener("change", (e) => save({ stop_at: e.target.value || "" }));
+  box.querySelector("#n-stop-clear")?.addEventListener("click", () => save({ stop_at: "" }));
   box.querySelectorAll("[data-opt]").forEach((c) => c.addEventListener("change", () => save({ [c.dataset.opt]: c.checked })));
   box.querySelector("#n-pick").addEventListener("click", () => setFilters(["tonight"]));
   box.querySelector("#n-run")?.addEventListener("click", async () => {
@@ -1813,8 +1826,13 @@ function pendingText(p) {
   if (!p.queued) return "Empty. Tick jobs in the Tonight column on the job list, or use “Add to tonight's list” on a job.";
   const parts = [p.resume && `${p.resume} resume${p.resume === 1 ? "" : "s"}`, p.fit && `${p.fit} fit check${p.fit === 1 ? "" : "s"}`,
     p.cover_letter && `${p.cover_letter} cover letter${p.cover_letter === 1 ? "" : "s"}`].filter(Boolean);
+  const capped = p.limit && p.ready > p.jobs;
+  const nights = capped ? Math.ceil(p.ready / p.limit) : 1;
   return esc(`${p.queued} job${p.queued === 1 ? "" : "s"} picked. `) +
-    (parts.length ? `<strong>${esc(parts.join(", "))}</strong> to make.` : esc("Nothing to make: turn on resumes, fit checks or cover letters above."));
+    (parts.length
+      ? (capped ? esc(`Each run does up to ${p.limit} jobs, so the next run makes `) : "") + `<strong>${esc(parts.join(", "))}</strong>` +
+        (capped ? esc(`. The other ${p.ready - p.jobs} wait for later runs (about ${nights - 1} more night${nights - 1 === 1 ? "" : "s"}); raise “Jobs per night” in Settings to do more at once.`) : esc(" to make."))
+      : esc("Nothing to make: turn on resumes, fit checks or cover letters above."));
 }
 
 function runHtml(r, running, compact = false) {
