@@ -443,3 +443,25 @@ def test_cover_letter_always_reads_as_a_letter():
     assert ai.finish_letter(good, "Yazid bin Abd Rahim") == good
     # sign-off without the name gets the name
     assert ai.finish_letter("Dear team,\n\nBody.\n\nSincerely,", "Yazid").endswith("Sincerely,\nYazid")
+
+
+def test_archive_jobs(c):
+    a = c.post("/api/jobs", json={"title": "Old Role", "description": "Desc", "status": "closed"}).json()
+    b = c.post("/api/jobs", json={"title": "Old Role 2", "description": "Desc", "status": "closed"}).json()
+    c.post("/api/nightly/queue", json={"job_ids": [a["id"]], "queued": True})
+    # archiving keeps the stage, takes the job off tonight's list
+    before = c.get(f"/api/jobs/{a['id']}").json()["updated_at"]
+    j = c.patch(f"/api/jobs/{a['id']}", json={"archived": True}).json()
+    assert j["archived_at"] and j["status"] == "closed" and not j["queued"]
+    assert j["updated_at"] == before  # archiving doesn't count as a change
+    assert c.patch(f"/api/jobs/{a['id']}", json={"queued": True}).status_code == 400
+    assert c.post("/api/nightly/queue", json={"job_ids": [a["id"]], "queued": True}).json()["changed"] == 0
+    # bulk, and it's idempotent
+    assert c.post("/api/jobs/archive", json={"job_ids": [a["id"], b["id"]], "archived": True}).json()["changed"] == 1
+    listed = {x["id"]: x for x in c.get("/api/jobs").json()}
+    assert listed[b["id"]]["archived_at"]
+    # kept in backups
+    backup = json.loads(c.get("/api/export").content)
+    assert next(x for p in backup["profiles"] for x in p["jobs"] if x["title"] == "Old Role 2")["archived_at"]
+    # unarchive
+    assert c.patch(f"/api/jobs/{b['id']}", json={"archived": False}).json()["archived_at"] is None

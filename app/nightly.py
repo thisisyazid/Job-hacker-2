@@ -56,7 +56,7 @@ def plan(db, user_id: int, s: NightlySetting) -> list[tuple[Job, str]]:
     A fit check is skipped if the job already has a score; a resume or cover
     letter is always made, since the job was picked on purpose."""
     jobs = (db.query(Job)
-            .filter(Job.user_id == user_id, Job.queued.is_(True))
+            .filter(Job.user_id == user_id, Job.queued.is_(True), Job.archived_at.is_(None))
             .order_by(Job.updated_at.desc()).all())
     tasks = []
     for j in jobs:
@@ -82,7 +82,7 @@ def plan(db, user_id: int, s: NightlySetting) -> list[tuple[Job, str]]:
 def summary(db, user_id: int, s: NightlySetting) -> dict:
     p = plan(db, user_id, s)
     return {
-        "queued": db.query(Job).filter(Job.user_id == user_id, Job.queued.is_(True)).count(),
+        "queued": db.query(Job).filter(Job.user_id == user_id, Job.queued.is_(True), Job.archived_at.is_(None)).count(),
         "jobs": len({j.id for j, _ in p}),
         "resume": sum(t == "resume" for _, t in p),
         "fit": sum(t == "fit" for _, t in p),

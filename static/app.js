@@ -351,11 +351,14 @@ async function renderList(keep = false) {
     state.jobs = await api("/jobs");
   }
   const jobs = state.jobs;
+  // Archived jobs are kept for searching later but left out of the everyday counts.
+  const live = jobs.filter((j) => !j.archived_at);
+  const archived = jobs.length - live.length;
   const counts = Object.fromEntries(STAGES.map((s) => [s.id, 0]));
-  jobs.forEach((j) => counts[j.status] = (counts[j.status] || 0) + 1);
-  const active = jobs.length - counts.closed;
-  const picked = jobs.filter((j) => j.queued).length;
-  const reposted = jobs.filter((j) => j.reposted_at).length;
+  live.forEach((j) => counts[j.status] = (counts[j.status] || 0) + 1);
+  const active = live.length - counts.closed;
+  const picked = live.filter((j) => j.queued).length;
+  const reposted = live.filter((j) => j.reposted_at).length;
   const y = scrollY;
   const focusQ = document.activeElement?.id === "q";
 
@@ -382,9 +385,13 @@ async function renderList(keep = false) {
           <button class="stage stage-tn" data-filter="tonight" aria-pressed="${state.filter === "tonight"}"><span class="dot"></span>Tonight <span class="n">${picked}</span></button>
           ${reposted || state.filter === "reposted" ? raw(html`<button class="stage stage-rp" data-filter="reposted" aria-pressed="${state.filter === "reposted"}" title="Jobs an import showed were posted again, in any stage"><span class="dot"></span>Reposted <span class="n">${reposted}</span></button>`) : ""}
           ${STAGES.map((s) => raw(html`<button class="stage" data-filter="${s.id}" aria-pressed="${state.filter === s.id}" style="--c:${raw(stageColor(s.id))}"><span class="dot"></span>${s.label} <span class="n">${counts[s.id]}</span></button>`))}
-          <button class="stage" data-filter="all" aria-pressed="${state.filter === "all"}">All <span class="n">${jobs.length}</span></button>
+          ${archived || state.filter === "archived" ? raw(html`<button class="stage stage-ar" data-filter="archived" aria-pressed="${state.filter === "archived"}" title="Jobs you've archived, kept for searching later"><span class="dot"></span>Archived <span class="n">${archived}</span></button>`) : ""}
+          <button class="stage" data-filter="all" aria-pressed="${state.filter === "all"}" title="Every job, archived ones included">All <span class="n">${jobs.length}</span></button>
         </div>
       </section>
+      ${state.filter === "closed" && counts.closed ? raw(html`<div class="archive-bar"><p>Done with these? Archive them to clear them out of the way. They stay searchable under <strong>Archived</strong>.</p>
+        <button class="btn btn-s" id="ar-closed">Archive all ${counts.closed} closed job${counts.closed === 1 ? "" : "s"}</button></div>`) : ""}
+      ${state.filter === "archived" && archived ? raw(html`<div class="archive-bar"><p>Archived jobs keep their stage and everything in them. Search them here, or open one to unarchive it.</p></div>`) : ""}
       <div class="tonight-bar" id="tonight-bar">
         <p class="tn-sum"><strong>Tonight's list:</strong> <span id="tn-sum">${picked ? `${picked} job${picked === 1 ? "" : "s"} picked.` : "empty. Tick jobs in the Tonight column."}</span></p>
         <div class="tn-tools">
@@ -465,8 +472,21 @@ async function renderList(keep = false) {
     const box = e.target.closest("input[data-q]");
     if (box) queueJobs([Number(box.dataset.q)], box.checked);
   });
+  document.getElementById("ar-closed")?.addEventListener("click", async (e) => {
+    const ids = live.filter((j) => j.status === "closed").map((j) => j.id);
+    if (!confirm(`Archive ${ids.length} closed job${ids.length === 1 ? "" : "s"}? You can find them under Archived and unarchive any of them later.`)) return;
+    e.currentTarget.disabled = true;
+    try {
+      const r = await api("/jobs/archive", { json: { job_ids: ids, archived: true } });
+      const at = new Date().toISOString();
+      state.jobs.forEach((j) => { if (ids.includes(j.id)) { j.archived_at = at; j.queued = false; } });
+      toast(`Archived ${r.changed} job${r.changed === 1 ? "" : "s"}`);
+    } catch (err) { toast(err.message, "error"); }
+    state.shown = 0;
+    renderList();
+  });
   document.getElementById("tn-pick").addEventListener("click", () => {
-    const ids = jobs.filter((j) => j.status === "saved" && !j.has_resume && j.has_description && !j.queued).map((j) => j.id);
+    const ids = live.filter((j) => j.status === "saved" && !j.has_resume && j.has_description && !j.queued).map((j) => j.id);
     if (!ids.length) return toast("No saved jobs without a resume (that have a description) to add.");
     queueJobs(ids, true);
   });
@@ -544,7 +564,10 @@ const STAGE_ORDER = Object.fromEntries(STAGES.map((s, i) => [s.id, i]));
 function drawRows() {
   const needle = state.q.trim().toLowerCase();
   let rows = state.jobs.filter((j) => {
-    if (state.filter === "tonight") { if (!j.queued) return false; }
+    if (state.filter === "archived") { if (!j.archived_at) return false; }
+    else if (state.filter !== "all" && j.archived_at) return false;
+    if (state.filter === "archived" || state.filter === "all") { /* any stage */ }
+    else if (state.filter === "tonight") { if (!j.queued) return false; }
     else if (state.filter === "reposted") { if (!j.reposted_at) return false; }
     else if (state.filter === "active" && j.status === "closed") return false;
     else if (!["all", "active"].includes(state.filter) && j.status !== state.filter) return false;
@@ -572,7 +595,7 @@ function drawRows() {
   const count = document.getElementById("sheet-count");
   count.textContent = `${rows.length} job${rows.length === 1 ? "" : "s"}${rows.length !== state.jobs.length ? ` of ${state.jobs.length}` : ""}`;
   if (!rows.length) {
-    tbody.innerHTML = html`<tr class="none"><td colspan="${SHEET_COLS.length}">${state.filter === "tonight" && !state.q ? "Nothing on tonight's list. Tick jobs in the Tonight column, or use Pick saved jobs without a resume." : state.filter === "reposted" && !state.q ? "No reposted jobs. When a CSV import shows a saved job was posted again, it appears here." : `No jobs match.${state.filter !== "all" ? " Try the All filter." : ""}`}</td></tr>`;
+    tbody.innerHTML = html`<tr class="none"><td colspan="${SHEET_COLS.length}">${state.filter === "tonight" && !state.q ? "Nothing on tonight's list. Tick jobs in the Tonight column, or use Pick saved jobs without a resume." : state.filter === "reposted" && !state.q ? "No reposted jobs. When a CSV import shows a saved job was posted again, it appears here." : state.filter === "archived" && !state.q ? "Nothing archived yet. Open a job and click Archive, or use Archive all closed jobs on the Closed filter." : `No jobs match.${state.filter !== "all" ? " Try the All filter." : ""}`}</td></tr>`;
     const m = document.getElementById("sheet-more");
     if (m) m.hidden = true;
     return;
@@ -622,6 +645,7 @@ function rowHtml(j) {
         ${j.has_description ? "" : j.url
           ? raw(html`<button type="button" class="flag warn flag-fill" data-fillrow="${j.id}" title="Read the description from the posting">No description · Fill in</button>`)
           : raw('<span class="flag warn" title="No link saved, so it can\'t be filled in automatically">No description</span>')}
+        ${j.archived_at ? raw('<span class="flag ar">Archived</span>') : ""}
         ${j.reposted_at ? raw(html`<span class="flag rp" title="${j.first_posted ? `First posted ${fmtPosted(j.first_posted, true)}` : "Posted again"}">Reposted</span>`) : ""}
         <span class="m-tags">${j.has_resume ? raw('<span class="flag ok">Resume</span>') : ""}${j.applied_at ? raw(html`<span class="m-applied">Applied ${fmtPosted(localDay(j.applied_at))}</span>`) : ""}</span>
       </td>
@@ -629,7 +653,7 @@ function rowHtml(j) {
       <td class="c-loc">${j.location || ""}</td>
       <td class="c-fit num">${j.fit_score ? raw(html`<span class="fitn" style="--fc:${raw(fitColor(j.fit_score))}" aria-label="Fit ${j.fit_score} out of 10">${j.fit_score}</span>`) : raw('<span class="nil">–</span>')}</td>
       <td class="c-res">${j.has_resume ? raw('<span class="flag ok">Ready</span>') : raw('<span class="nil">–</span>')}</td>
-      <td class="c-tn"><input type="checkbox" data-q="${j.id}" ${j.queued ? "checked" : ""} ${j.has_description ? "" : "disabled"} aria-label="Tonight's list: ${j.title}" title="${j.has_description ? "Make overnight" : "Needs a description first"}"></td>
+      <td class="c-tn"><input type="checkbox" data-q="${j.id}" ${j.queued ? "checked" : ""} ${j.has_description && !j.archived_at ? "" : "disabled"} aria-label="Tonight's list: ${j.title}" title="${j.archived_at ? "Archived" : j.has_description ? "Make overnight" : "Needs a description first"}"></td>
       <td class="c-post num" title="${j.posted_date ? `Posted ${fmtPosted(j.posted_date, true)}${j.first_posted ? `, first posted ${fmtPosted(j.first_posted, true)}` : ""}` : "Posting date unknown"}">${j.posted_date ? fmtPosted(j.posted_date) : raw('<span class="nil">–</span>')}</td>
       <td class="c-app num" title="${j.applied_at ? `Moved to Applied ${longDate(j.applied_at)}` : "Not applied yet"}">${j.applied_at ? fmtPosted(localDay(j.applied_at)) : raw('<span class="nil">–</span>')}</td>
       <td class="c-upd num" title="Changed in the app ${longDate(j.updated_at)}">${ago(j.updated_at)}</td>
@@ -737,7 +761,7 @@ function findLinks(text) {
 
 async function renderBulk(body) {
   if (!state.jobs) state.jobs = await api("/jobs");
-  const missing = state.jobs.filter((j) => j.url && !j.has_description && !looksLikeUrl(j.title));
+  const missing = state.jobs.filter((j) => j.url && !j.has_description && !j.archived_at && !looksLikeUrl(j.title));
   body.innerHTML = html`
     <section class="bulk">
       <h2>Paste many links</h2>
@@ -963,6 +987,7 @@ async function renderJob(id) {
   setView(html`
     <article>
       <a class="btn btn-ghost back" href="#/">${raw(icon.back)}Jobs</a>
+      ${j.archived_at ? raw(html`<div class="callout archived-note"><p><strong>Archived ${longDate(j.archived_at)}.</strong> It's kept for searching, but left out of your active list and overnight runs.</p><button class="btn btn-s" data-archive="0">Unarchive</button></div>`) : ""}
       <header class="detail-head">
         <h1>${j.title}</h1>
         ${j.company ? raw(html`<div class="company">${j.company}</div>`) : ""}
@@ -1025,7 +1050,11 @@ async function renderJob(id) {
       </section>
 
       <section class="section">
-        <button class="btn btn-danger" id="del">Delete this job</button>
+        <div class="row">
+          ${j.archived_at ? raw('<button class="btn" data-archive="0">Unarchive this job</button>') : raw('<button class="btn" data-archive="1">Archive this job</button>')}
+          <button class="btn btn-danger" id="del">Delete this job</button>
+        </div>
+        <p class="hint">${j.archived_at ? "Unarchiving puts it back in your active list." : "Archive keeps the job, its resumes and notes, and moves it out of the way. Find it later under Archived."}</p>
       </section>
     </article>`);
 
@@ -1053,6 +1082,16 @@ async function renderJob(id) {
     try { await api(`/jobs/${id}`, { method: "PATCH", json: { notes: notes.value } }); st.textContent = "Notes saved."; }
     catch (e) { st.textContent = e.message; }
   });
+
+  $main.querySelectorAll("[data-archive]").forEach((b) => b.addEventListener("click", async () => {
+    const want = b.dataset.archive === "1";
+    try {
+      await api(`/jobs/${id}`, { method: "PATCH", json: { archived: want } });
+      state.jobs = null;
+      toast(want ? "Archived. Find it under Archived on the job list." : "Unarchived");
+      renderJob(id);
+    } catch (e) { toast(e.message, "error"); }
+  }));
 
   document.getElementById("del").addEventListener("click", async () => {
     if (!confirm(`Delete “${j.title}”? Its resume and cover letters go too.`)) return;

@@ -19,6 +19,7 @@
   --st-offer: #C27C12;
   --st-closed: #BCC4CA;
   --repost: #8A3FD1;
+  --archived: #6B7785;
 
   --fit-high: #0B8466;
   --fit-mid: #C27C12;
@@ -54,6 +55,7 @@
     --st-offer: #F0B44C;
     --st-closed: #4A565F;
     --repost: #C49BFF;
+    --archived: #9AA6B2;
     --fit-high: #38C59E;
     --fit-mid: #F0B44C;
     --fit-low: #6B7780;
@@ -252,6 +254,12 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .sheet thead th.c-tn button { justify-content: center; }
 .stage-tn { --c: var(--accent); }
 .stage-rp { --c: var(--repost); }
+.stage-ar { --c: var(--archived); }
+.archive-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px;
+  padding: 8px 8px 8px 14px; margin: 0 0 10px; background: var(--soft); border: 1px solid var(--line); border-radius: var(--radius-m); }
+.archive-bar p { margin: 0; font-size: 16px; color: var(--muted); }
+.archived-note { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 14px; }
+.archived-note p { margin: 0; }
 .tonight-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px;
   padding: 6px 6px 6px 14px; margin: 0 0 10px; background: var(--accent-soft); border-radius: var(--radius-m); }
 .tn-sum { margin: 0; font-size: 16px; }
@@ -283,6 +291,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .flag-fill:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .flag.ok { color: var(--st-interviewing); background: color-mix(in srgb, var(--st-interviewing) 13%, transparent); }
 .flag.night { color: var(--accent); background: var(--accent-soft); }
+.flag.ar { color: var(--archived); background: color-mix(in srgb, var(--archived) 15%, transparent); }
 .flag.rp { color: var(--repost); background: color-mix(in srgb, var(--repost) 13%, transparent); }
 .flag.warn { color: var(--st-offer); background: color-mix(in srgb, var(--st-offer) 13%, transparent); }
 .fitn { display: inline-grid; place-items: center; min-width: 28px; height: 24px; padding: 0 6px; border-radius: 6px;

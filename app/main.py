@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from . import ai, auth, config, logs, nightly
 from .dates import is_iso, normalize as normalize_date
@@ -103,6 +104,7 @@ def job_out(j: Job, full: bool = True) -> dict:
         "salary": j.salary, "employment_type": j.employment_type, "posted_date": j.posted_date,
         "source": j.source, "status": j.status, "tags": j.tags, "fit_score": j.fit_score,
         "queued": bool(j.queued), "reposted_at": iso(j.reposted_at), "first_posted": j.first_posted or "",
+        "archived_at": iso(j.archived_at),
         "applied_at": iso(j.applied_at), "created_at": iso(j.created_at), "updated_at": iso(j.updated_at),
         "has_description": bool(j.description and j.description.strip()),
     }
@@ -159,6 +161,12 @@ class JobPatch(BaseModel):
     tags: Optional[str] = None
     notes: Optional[str] = None
     queued: Optional[bool] = None
+    archived: Optional[bool] = None
+
+
+class ArchiveIn(BaseModel):
+    job_ids: list[int]
+    archived: bool = True
 
 
 class QueueIn(BaseModel):
@@ -558,7 +566,11 @@ def update_job(job_id: int, body: JobPatch, user: User = Depends(current_user), 
         raise HTTPException(400, "A job needs a title.")
     if "title" in data and looks_like_url(data["title"]):
         raise HTTPException(422, "Give the job a real title, not a link.")
+    if "archived" in data:
+        _set_archived(j, bool(data.pop("archived")))
     if "queued" in data:
+        if data["queued"] and j.archived_at:
+            raise HTTPException(400, "Unarchive this job first.")
         if data["queued"] and not (j.description or "").strip():
             raise HTTPException(400, "Add the job description first, so there's something to tailor to.")
         j.queued = bool(data.pop("queued"))
@@ -567,6 +579,28 @@ def update_job(job_id: int, body: JobPatch, user: User = Depends(current_user), 
     db.commit()
     db.refresh(j)
     return job_out(j)
+
+
+def _set_archived(j: Job, archived: bool) -> bool:
+    """Archive or unarchive a job. Archiving also takes it off tonight's list. Returns True if it changed."""
+    if bool(j.archived_at) == archived:
+        return False
+    j.archived_at = now() if archived else None
+    if archived:
+        j.queued = False
+    flag_modified(j, "updated_at")  # keep "Updated" as it was: archiving isn't a change to the job itself
+    log.info("%s job %s: %r at %r", "archived" if archived else "unarchived", j.id, logs.short(j.title, 60),
+             logs.short(j.company, 40))
+    return True
+
+
+@app.post("/api/jobs/archive")
+def archive_jobs(body: ArchiveIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Archive (or unarchive) several jobs at once."""
+    jobs = db.query(Job).filter(Job.user_id == user.id, Job.id.in_(body.job_ids)).all() if body.job_ids else []
+    changed = sum(_set_archived(j, body.archived) for j in jobs)
+    db.commit()
+    return {"changed": changed}
 
 
 @app.delete("/api/jobs/{job_id}")
@@ -645,7 +679,7 @@ def queue_jobs(body: QueueIn, user: User = Depends(current_user), db: Session = 
     jobs = db.query(Job).filter(Job.user_id == user.id, Job.id.in_(body.job_ids)).all()
     changed = 0
     for j in jobs:
-        if body.queued and not (j.description or "").strip():
+        if body.queued and (not (j.description or "").strip() or j.archived_at):
             continue
         if bool(j.queued) != body.queued:
             j.queued = body.queued
@@ -896,6 +930,7 @@ def export_all(db: Session = Depends(get_db)):
                                                "posted_date", "description", "source", "status", "tags", "notes",
                                                "fit_score", "fit_json", "first_posted")},
                 "applied_at": iso(j.applied_at), "created_at": iso(j.created_at), "reposted_at": iso(j.reposted_at),
+                "archived_at": iso(j.archived_at),
                 "documents": [{"kind": d.kind, "content": d.content, "persona_name": d.persona_name,
                                "engine": d.engine or "",
                                "created_at": iso(d.created_at)} for d in j.documents],
@@ -977,6 +1012,7 @@ async def import_backup(file: UploadFile = File(...), db: Session = Depends(get_
                 source=j.get("source") or "import", status=_map_status(j.get("status")),
                 fit_score=j.get("fit_score"), applied_at=_parse_dt(j.get("applied_at")),
                 reposted_at=_parse_dt(j.get("reposted_at")), first_posted=j.get("first_posted") or "",
+                archived_at=_parse_dt(j.get("archived_at")),
                 created_at=_parse_dt(j.get("created_at")) or now(),
             )
             db.add(job)
