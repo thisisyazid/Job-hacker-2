@@ -19,6 +19,7 @@ from . import ai, auth, config, logs, nightly
 from .dates import is_iso, normalize as normalize_date
 from .db import STATUSES, Document, Job, NightlyRun, Persona, User, get_db, init_db, now
 from .docx_export import to_docx
+from .pdf_export import to_pdf
 from .scrape import ScrapeError, fetch_job, looks_like_url, normalize_url
 
 logs.setup()
@@ -720,11 +721,27 @@ def delete_document(doc_id: int, user: User = Depends(current_user), db: Session
     return {"ok": True}
 
 
+def _doc_slug(d: Document, user: User) -> str:
+    j = d.job
+    return re.sub(r"[^A-Za-z0-9]+", "-", f"{user.name} {d.kind.replace('_', ' ')} {j.company or ''} {j.title}").strip("-")[:90]
+
+
+@app.get("/api/documents/{doc_id}/pdf")
+def download_pdf(doc_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    d = _own_doc(doc_id, user, db)
+    try:
+        data = to_pdf(d.content, d.kind)
+    except Exception:
+        log.exception("PDF export failed for document %s", d.id)
+        raise HTTPException(500, "Couldn't make the PDF. Download the Word file instead; details are in today's log.")
+    return Response(data, media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{_doc_slug(d, user)}.pdf"'})
+
+
 @app.get("/api/documents/{doc_id}/docx")
 def download_docx(doc_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     d = _own_doc(doc_id, user, db)
-    j = d.job
-    slug = re.sub(r"[^A-Za-z0-9]+", "-", f"{user.name} {d.kind.replace('_', ' ')} {j.company or ''} {j.title}").strip("-")[:90]
+    slug = _doc_slug(d, user)
     return Response(
         to_docx(d.content, d.kind),
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",

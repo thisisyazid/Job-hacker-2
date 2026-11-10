@@ -131,14 +131,18 @@ def _letter(text: str) -> Document:
         lines = [re.sub(r"\*\*(.*?)\*\*", r"\1", l).strip() for l in block.splitlines() if l.strip()]
         if not lines:
             continue
-        if all(re.match(r"^[-*•]\s+", l) for l in lines):
-            for l in lines:
+        # Plain lines stay together as one paragraph; "- " lines become bullets,
+        # also when they follow an intro line in the same block.
+        p = None
+        for l in lines:
+            if re.match(r"^[-*•]\s+", l):
                 _bullet(doc, re.sub(r"^[-*•]\s+", "", l))
-            continue
-        p = doc.add_paragraph()
-        p.paragraph_format.space_after = Pt(10)
-        for i, l in enumerate(lines):
-            if i:
+                p = None
+                continue
+            if p is None:
+                p = doc.add_paragraph()
+                p.paragraph_format.space_after = Pt(10)
+            else:
                 p.add_run().add_break()
             p.add_run(re.sub(r"^#+\s+", "", l))
     return doc

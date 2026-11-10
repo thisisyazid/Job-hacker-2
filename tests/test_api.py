@@ -114,6 +114,9 @@ def test_ai_fit_and_docs_with_stub(c, monkeypatch):
     assert c.patch(f"/api/documents/{d['id']}", json={"content": "edited"}).json()["content"] == "edited"
     r = c.get(f"/api/documents/{d['id']}/docx")
     assert r.status_code == 200 and r.content[:2] == b"PK"
+    r = c.get(f"/api/documents/{d['id']}/pdf")
+    assert r.status_code == 200 and r.content[:5] == b"%PDF-" and r.headers["content-type"] == "application/pdf"
+    assert r.headers["content-disposition"].endswith('.pdf"')
 
 
 def test_personas_default_logic(c):
