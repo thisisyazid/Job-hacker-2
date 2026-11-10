@@ -2,6 +2,7 @@
 
 const STAGES = [
   { id: "saved", label: "Saved" },
+  { id: "referral", label: "Referral" },  // referred by a person
   { id: "applied", label: "Applied" },
   { id: "interviewing", label: "Interviewing" },
   { id: "offer", label: "Offer" },

@@ -529,3 +529,11 @@ def test_nightly_run_stops_at_stop_time(c, monkeypatch):
     assert run["status"] == "stopped" and run["made"] == 0 and "Stopped at" in run["log"][-1]["note"]
     assert all(j["queued"] for j in c.get("/api/jobs").json() if j["id"] in ids)
     c.post("/api/nightly/queue", json={"job_ids": ids, "queued": False})
+def test_referral_stage(c):
+    j = c.post("/api/jobs", json={"title": "Referred role", "status": "referral"}).json()
+    assert j["status"] == "referral" and not j["applied_at"]  # referred isn't applied yet
+    assert c.get("/api/session").json()["statuses"][1] == "referral"
+    r = c.post("/api/import/csv", files={"file": ("r.csv", "Job title,Status\nCSV referral,Referral\n", "text/csv")}).json()
+    assert r["added"] == 1
+    assert next(x for x in c.get("/api/jobs").json() if x["title"] == "CSV referral")["status"] == "referral"
+    assert c.post("/api/jobs/stage", json={"job_ids": [j["id"]], "status": "applied"}).json()["changed"] == 1

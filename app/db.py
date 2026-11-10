@@ -36,7 +36,7 @@ class Base(DeclarativeBase):
     pass
 
 
-STATUSES = ["saved", "applied", "interviewing", "offer", "closed"]
+STATUSES = ["saved", "referral", "applied", "interviewing", "offer", "closed"]
 
 
 class User(Base):
