@@ -409,3 +409,19 @@ def test_csv_repost_updates_posted_date(c):
     assert r["added"] == 1 and r["reposted"] == 0
     twice_job = next(j for j in c.get("/api/jobs").json() if j["title"] == "Twice Role")
     assert twice_job["posted_date"] == "2026-10-20" and not twice_job["reposted_at"]
+
+
+def test_fill_in_respects_no_ai(c, monkeypatch):
+    from app import main
+    seen = {}
+
+    def fake_fetch(url, engine=None, allow_ai=True):
+        seen["allow_ai"] = allow_ai
+        return {"title": "X", "description": "Filled description"}, "structured data"
+    monkeypatch.setattr(main, "fetch_job", fake_fetch)
+    j = c.post("/api/jobs", json={"title": "Fill Me", "url": "https://fill.example.com/1"}).json()
+    r = c.post(f"/api/jobs/{j['id']}/refresh", json={"engine": "none"}).json()
+    assert seen["allow_ai"] is False and r["status"] == "updated" and r["method"] == "structured data"
+    assert "description" in r["filled"]
+    c.post(f"/api/jobs/{j['id']}/refresh", json={"engine": "claude"})
+    assert seen["allow_ai"] is True
