@@ -164,6 +164,11 @@ class JobPatch(BaseModel):
     archived: Optional[bool] = None
 
 
+class StageIn(BaseModel):
+    job_ids: list[int]
+    status: str
+
+
 class ArchiveIn(BaseModel):
     job_ids: list[int]
     archived: bool = True
@@ -592,6 +597,25 @@ def _set_archived(j: Job, archived: bool) -> bool:
     log.info("%s job %s: %r at %r", "archived" if archived else "unarchived", j.id, logs.short(j.title, 60),
              logs.short(j.company, 40))
     return True
+
+
+@app.post("/api/jobs/stage")
+def set_stage(body: StageIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Move several jobs to one stage. Moving to Applied (or later) records the applied date if it's not set."""
+    if body.status not in STATUSES:
+        raise HTTPException(400, f"Status must be one of: {', '.join(STATUSES)}")
+    jobs = db.query(Job).filter(Job.user_id == user.id, Job.id.in_(body.job_ids)).all() if body.job_ids else []
+    changed = 0
+    for j in jobs:
+        if j.status == body.status:
+            continue
+        j.status = body.status
+        if body.status in ("applied", "interviewing", "offer") and not j.applied_at:
+            j.applied_at = now()
+        changed += 1
+    db.commit()
+    log.info("moved %d job(s) to %s", changed, body.status)
+    return {"changed": changed, "jobs": [job_out(j, full=False) for j in jobs]}
 
 
 @app.post("/api/jobs/archive")
