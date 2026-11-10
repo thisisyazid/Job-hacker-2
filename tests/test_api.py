@@ -137,7 +137,8 @@ def test_csv_import(c):
                 "https://www.linkedin.com/jobs/view/2222222222,Agile Coach,Globex,Remote,2026-04-15,In progress\n"
                 ",,,,,\n")
     r = c.post("/api/import/csv", files={"file": ("jobs.csv", csv_text, "text/csv")}).json()
-    assert r == {"rows": 4, "added": 2, "duplicates": 1, "reposted": 0, "skipped": 1, "dead": 0}
+    assert {k: v for k, v in r.items() if k != "to_fill"} == {"rows": 4, "added": 2, "duplicates": 1, "reposted": 0, "skipped": 1, "dead": 0}
+    assert len(r["to_fill"]) == 2  # both new jobs have a link and no description
     statuses = {j["title"]: j["status"] for j in c.get("/api/jobs").json()}
     assert statuses["Agile Coach"] == "applied" and statuses["Scrum Master"] == "saved"
 
@@ -378,7 +379,7 @@ def test_csv_bad_files_say_why(c):
         return r.json()["detail"]
     assert "Excel file" in err(b"PK\x03\x04rest")
     assert "empty" in err(b"  \n")
-    assert "Couldn't find a job title column" in err(b"Company,URL\nAcme,https://a.example\n")
+    assert "Couldn't find a job title or link column" in err(b"Company,Location\nAcme,Singapore\n")
     assert "no jobs" in err(b"Job title,URL\n")
 
 
@@ -474,3 +475,18 @@ def test_bulk_stage(c):
     assert r["changed"] == 1 and all(j["status"] == "applied" for j in r["jobs"])
     assert next(j for j in r["jobs"] if j["id"] == a["id"])["applied_at"]
     assert c.post("/api/jobs/stage", json={"job_ids": [a["id"]], "status": "nope"}).status_code == 400
+
+
+
+def test_csv_link_only_rows_are_imported_and_filled(c, monkeypatch):
+    from app import main
+    data = b"Job URL\nhttps://linkonly.example.com/1\nhttps://linkonly.example.com/2\n"
+    r = c.post("/api/import/csv", files={"file": ("links.csv", data, "text/csv")}).json()
+    assert r["added"] == 2 and len(r["to_fill"]) == 2
+    job = c.get(f"/api/jobs/{r['to_fill'][0]}").json()
+    assert job["title"] == main.PENDING_TITLE
+    monkeypatch.setattr(main, "fetch_job", lambda url, engine=None, allow_ai=True: (
+        {"title": "Real Title", "company": "Acme", "description": "Real description"}, "structured data"))
+    f = c.post(f"/api/jobs/{job['id']}/refresh", json={"engine": "none"}).json()
+    assert f["status"] == "updated" and f["filled"][0] == "title"
+    assert c.get(f"/api/jobs/{job['id']}").json()["title"] == "Real Title"

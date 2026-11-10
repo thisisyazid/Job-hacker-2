@@ -20,7 +20,30 @@ const state = {
   shown: 0,  // how many rows of the job table are drawn; more are added as you scroll
   selected: new Set(),  // job ids ticked in the select column, for bulk actions
 };
-let lastRows = [];  // the job table's current rows (filtered and sorted), for "select all"
+let lastRows = [];
+// Filters can be combined with Ctrl/Cmd/Shift+click: stages are OR'd together (Saved or Applied),
+// and Tonight / Reposted / No description narrow that down. All shows everything.
+state.filters = new Set((localGet("jh.filters") || state.filter || "active").split(",").filter(Boolean));
+function fOn(id) { return state.filters.has(id); }
+function fOnly(id) { return state.filters.size === 1 && state.filters.has(id); }
+function setFilters(ids) {
+  state.filters = new Set(ids.length ? ids : ["active"]);
+  state.filter = state.filters.size === 1 ? [...state.filters][0] : "multi";
+  localSet("jh.filters", [...state.filters].join(","));
+  localSet("jh.filter", state.filter);
+}
+function jobPasses(j) {
+  const f = state.filters;
+  if (f.has("all")) return true;
+  if (f.has("archived") ? !j.archived_at : j.archived_at) return false;
+  const stages = STAGES.map((st) => st.id).filter((id) => f.has(id));
+  if (f.has("active")) stages.push(...STAGES.map((st) => st.id).filter((id) => id !== "closed"));
+  if (stages.length && !stages.includes(j.status)) return false;
+  if (f.has("tonight") && !j.queued) return false;
+  if (f.has("reposted") && !j.reposted_at) return false;
+  if (f.has("nodesc") && (j.has_description || looksLikeUrl(j.title))) return false;
+  return true;
+}  // the job table's current rows (filtered and sorted), for "select all"
 const PAGE = 100;
 
 const $main = document.getElementById("main");
@@ -178,7 +201,7 @@ async function withAI(opts, fn) {
 
 // Ask before filling in a job: may AI be used if free reading finds nothing?
 // Resolves to "local" | "claude" | "none", or null when cancelled.
-function askFillEngine(count = 1) {
+function askFillEngine(count = 1, intro = "") {
   const all = engines();
   const opts = [
     all.local?.available && { id: "local", name: `Local (${all.local.model})`, note: "Free. Runs on your own computer, so it's slower." },
@@ -192,6 +215,7 @@ function askFillEngine(count = 1) {
   dlg.innerHTML = html`
     <form method="dialog">
       <h2>${count > 1 ? `Fill in ${count} jobs` : "Fill in missing details"}</h2>
+      ${intro ? raw(html`<p><strong>${intro}</strong></p>`) : ""}
       <p>Job Hacker reads the posting first. That's free and works for LinkedIn, MyCareersFuture and most career pages.</p>
       <p><strong>If that finds nothing, may it use AI as a last resort?</strong></p>
       <div class="pick-opts" role="radiogroup" aria-label="AI as a last resort">
@@ -217,7 +241,7 @@ function askFillEngine(count = 1) {
   }));
 }
 
-const FILL_LABELS = { description: "description", company: "company", location: "location", salary: "salary", employment_type: "job type", posted_date: "posted date" };
+const FILL_LABELS = { title: "title", description: "description", company: "company", location: "location", salary: "salary", employment_type: "job type", posted_date: "posted date" };
 
 // Re-read a job's posting and fill only its empty fields (nothing already there
 // is changed). Asks first whether AI may be used. Returns the updated job, or null.
@@ -245,9 +269,9 @@ async function fillJob(id) {
 
 // Fill in several jobs one after another, with one question about AI up front,
 // a progress card with a Stop button, and a summary at the end. Returns the updated jobs.
-async function fillJobs(ids) {
+async function fillJobs(ids, intro = "") {
   if (!ids.length) return [];
-  const eng = await askFillEngine(ids.length);
+  const eng = await askFillEngine(ids.length, intro);
   if (!eng) return [];
   const who = eng === "local" ? "your local model" : "Claude";
   const stop = aiWait(`Filling in ${ids.length} job${ids.length === 1 ? "" : "s"}`, "Starting…",
@@ -417,24 +441,24 @@ async function renderList(keep = false) {
       <div class="callout dead-callout"><p><strong>${(() => { const n = jobs.filter((j) => looksLikeUrl(j.title)).length; return n === 1 ? "1 job looks taken down:" : `${n} jobs look taken down:`; })()}</strong> the title is just a link.</p>
         <button class="btn btn-s" id="rm-dead">Remove them</button></div>`) : ""}
       ${jobs.length ? raw(html`
-      <section class="flow ${state.filter !== "all" && state.filter !== "active" ? "filtered" : ""}" aria-label="Pipeline">
+      <section class="flow ${fOnly("all") || fOnly("active") ? "" : "filtered"}" aria-label="Pipeline">
         <div class="flow-bar">
-          ${STAGES.filter((s) => counts[s.id]).map((s) => raw(html`<button class="flow-seg ${state.filter === s.id ? "on" : ""}" data-st="${s.id}" data-filter="${s.id}" style="--n:${counts[s.id]};--c:${raw(stageColor(s.id))}" aria-label="${s.label}: ${counts[s.id]}"></button>`))}
+          ${STAGES.filter((s) => counts[s.id]).map((s) => raw(html`<button class="flow-seg ${fOn(s.id) ? "on" : ""}" data-st="${s.id}" data-filter="${s.id}" style="--n:${counts[s.id]};--c:${raw(stageColor(s.id))}" aria-label="${s.label}: ${counts[s.id]}"></button>`))}
         </div>
         <div class="flow-legend" role="group" aria-label="Filter by stage">
-          <button class="stage" data-filter="active" aria-pressed="${state.filter === "active"}">Active <span class="n">${active}</span></button>
-          <button class="stage stage-tn" data-filter="tonight" aria-pressed="${state.filter === "tonight"}"><span class="dot"></span>Tonight <span class="n">${picked}</span></button>
-          ${reposted || state.filter === "reposted" ? raw(html`<button class="stage stage-rp" data-filter="reposted" aria-pressed="${state.filter === "reposted"}" title="Jobs an import showed were posted again, in any stage"><span class="dot"></span>Reposted <span class="n">${reposted}</span></button>`) : ""}
-          ${STAGES.map((s) => raw(html`<button class="stage" data-filter="${s.id}" aria-pressed="${state.filter === s.id}" style="--c:${raw(stageColor(s.id))}"><span class="dot"></span>${s.label} <span class="n">${counts[s.id]}</span></button>`))}
-          ${nodesc || state.filter === "nodesc" ? raw(html`<button class="stage stage-nd" data-filter="nodesc" aria-pressed="${state.filter === "nodesc"}" title="Jobs without a description. Select them and use Fill in"><span class="dot"></span>No description <span class="n">${nodesc}</span></button>`) : ""}
-          ${archived || state.filter === "archived" ? raw(html`<button class="stage stage-ar" data-filter="archived" aria-pressed="${state.filter === "archived"}" title="Jobs you've archived, kept for searching later"><span class="dot"></span>Archived <span class="n">${archived}</span></button>`) : ""}
-          <button class="stage" data-filter="all" aria-pressed="${state.filter === "all"}" title="Every job, archived ones included">All <span class="n">${jobs.length}</span></button>
+          <button class="stage" data-filter="active" aria-pressed="${fOn("active")}">Active <span class="n">${active}</span></button>
+          <button class="stage stage-tn" data-filter="tonight" aria-pressed="${fOn("tonight")}"><span class="dot"></span>Tonight <span class="n">${picked}</span></button>
+          ${reposted || fOn("reposted") ? raw(html`<button class="stage stage-rp" data-filter="reposted" aria-pressed="${fOn("reposted")}" title="Jobs an import showed were posted again, in any stage"><span class="dot"></span>Reposted <span class="n">${reposted}</span></button>`) : ""}
+          ${STAGES.map((s) => raw(html`<button class="stage" data-filter="${s.id}" aria-pressed="${fOn(s.id)}" style="--c:${raw(stageColor(s.id))}"><span class="dot"></span>${s.label} <span class="n">${counts[s.id]}</span></button>`))}
+          ${nodesc || fOn("nodesc") ? raw(html`<button class="stage stage-nd" data-filter="nodesc" aria-pressed="${fOn("nodesc")}" title="Jobs without a description. Select them and use Fill in"><span class="dot"></span>No description <span class="n">${nodesc}</span></button>`) : ""}
+          ${archived || fOn("archived") ? raw(html`<button class="stage stage-ar" data-filter="archived" aria-pressed="${fOn("archived")}" title="Jobs you've archived, kept for searching later"><span class="dot"></span>Archived <span class="n">${archived}</span></button>`) : ""}
+          <button class="stage" data-filter="all" aria-pressed="${fOn("all")}" title="Every job, archived ones included">All <span class="n">${jobs.length}</span></button>
         </div>
       </section>
-      ${state.filter === "closed" && counts.closed ? raw(html`<div class="archive-bar"><p>Done with these? Archive them to clear them out of the way. They stay searchable under <strong>Archived</strong>.</p>
+      ${fOnly("closed") && counts.closed ? raw(html`<div class="archive-bar"><p>Done with these? Archive them to clear them out of the way. They stay searchable under <strong>Archived</strong>.</p>
         <button class="btn btn-s" id="ar-closed">Archive all ${counts.closed} closed job${counts.closed === 1 ? "" : "s"}</button></div>`) : ""}
-      ${state.filter === "nodesc" && nodesc ? raw(html`<div class="archive-bar"><p>Tick the jobs to fill in (or the box at the top of the table for all of them), then click <strong>Fill in</strong> in the bar at the bottom.</p></div>`) : ""}
-      ${state.filter === "archived" && archived ? raw(html`<div class="archive-bar"><p>Archived jobs keep their stage and everything in them. Search them here, or open one to unarchive it.</p></div>`) : ""}
+      ${fOn("nodesc") && nodesc ? raw(html`<div class="archive-bar"><p>Tick the jobs to fill in (or the box at the top of the table for all of them), then click <strong>Fill in</strong> in the bar at the bottom.</p></div>`) : ""}
+      ${fOn("archived") && archived ? raw(html`<div class="archive-bar"><p>Archived jobs keep their stage and everything in them. Search them here, or open one to unarchive it.</p></div>`) : ""}
       <div class="tonight-bar" id="tonight-bar">
         <p class="tn-sum"><strong>Tonight's list:</strong> <span id="tn-sum">${picked ? `${picked} job${picked === 1 ? "" : "s"} picked.` : "empty. Tick jobs in the Tonight column."}</span></p>
         <div class="tn-tools">
@@ -459,7 +483,7 @@ async function renderList(keep = false) {
           <button class="btn btn-ghost btn-s" id="sel-clear">Clear</button>
         </div>
       </div>
-      <p class="hint sel-hint">Click a row to select it, <span class="kbd">Ctrl</span>+click to add more, <span class="kbd">Shift</span>+click for a range, then right-click for actions. Click a title, or double-click a row, to open the job.</p>
+      <p class="hint sel-hint">Click a row to select it, <span class="kbd">Ctrl</span>+click to add more, <span class="kbd">Shift</span>+click for a range, then right-click for actions. Click a title, or double-click a row, to open the job. <span class="kbd">Ctrl</span>+click the filters above to combine them.</p>
       <div class="sheet-wrap">
         <table class="sheet">
           <thead><tr>
@@ -489,10 +513,15 @@ async function renderList(keep = false) {
     if (await removeDeadJobs(jobs.filter((j) => looksLikeUrl(j.title)).length)) renderList(true);
   });
   if (!jobs.length) return;
-  $main.querySelectorAll("[data-filter]").forEach((b) => b.addEventListener("click", () => {
-    state.filter = b.dataset.filter;
+  $main.querySelectorAll("[data-filter]").forEach((b) => b.addEventListener("click", (e) => {
+    const id = b.dataset.filter;
+    if ((e.ctrlKey || e.metaKey || e.shiftKey) && id !== "all") {
+      const f = new Set(state.filters);
+      f.delete("all");
+      if (f.has(id)) f.delete(id); else f.add(id);
+      setFilters([...f]);
+    } else setFilters([id]);
     state.shown = 0;
-    localSet("jh.filter", state.filter);
     renderList(true);
   }));
   const q = document.getElementById("q");
@@ -669,14 +698,7 @@ const STAGE_ORDER = Object.fromEntries(STAGES.map((s, i) => [s.id, i]));
 function drawRows() {
   const needle = state.q.trim().toLowerCase();
   let rows = state.jobs.filter((j) => {
-    if (state.filter === "archived") { if (!j.archived_at) return false; }
-    else if (state.filter !== "all" && j.archived_at) return false;
-    if (state.filter === "archived" || state.filter === "all") { /* any stage */ }
-    else if (state.filter === "tonight") { if (!j.queued) return false; }
-    else if (state.filter === "reposted") { if (!j.reposted_at) return false; }
-    else if (state.filter === "nodesc") { if (j.has_description || looksLikeUrl(j.title)) return false; }
-    else if (state.filter === "active" && j.status === "closed") return false;
-    else if (!["all", "active"].includes(state.filter) && j.status !== state.filter) return false;
+    if (!jobPasses(j)) return false;
     if (needle && !`${j.title} ${j.company} ${j.location} ${j.tags}`.toLowerCase().includes(needle)) return false;
     return true;
   });
@@ -702,7 +724,7 @@ function drawRows() {
   const count = document.getElementById("sheet-count");
   count.textContent = `${rows.length} job${rows.length === 1 ? "" : "s"}${rows.length !== state.jobs.length ? ` of ${state.jobs.length}` : ""}`;
   if (!rows.length) {
-    tbody.innerHTML = html`<tr class="none"><td colspan="${SHEET_COLS.length}">${state.filter === "tonight" && !state.q ? "Nothing on tonight's list. Tick jobs in the Tonight column, or use Pick saved jobs without a resume." : state.filter === "reposted" && !state.q ? "No reposted jobs. When a CSV import shows a saved job was posted again, it appears here." : state.filter === "nodesc" && !state.q ? "Every job has a description." : state.filter === "archived" && !state.q ? "Nothing archived yet. Open a job and click Archive, or use Archive all closed jobs on the Closed filter." : `No jobs match.${state.filter !== "all" ? " Try the All filter." : ""}`}</td></tr>`;
+    tbody.innerHTML = html`<tr class="none"><td colspan="${SHEET_COLS.length}">${fOnly("tonight") && !state.q ? "Nothing on tonight's list. Tick jobs in the Tonight column, or use Pick saved jobs without a resume." : fOnly("reposted") && !state.q ? "No reposted jobs. When a CSV import shows a saved job was posted again, it appears here." : fOnly("nodesc") && !state.q ? "Every job has a description." : fOnly("archived") && !state.q ? "Nothing archived yet. Open a job and click Archive, or use Archive all closed jobs on the Closed filter." : `No jobs match.${!fOnly("all") ? " Try the All filter." : ""}`}</td></tr>`;
     const m = document.getElementById("sheet-more");
     if (m) m.hidden = true;
     drawSelBar();
@@ -1073,7 +1095,7 @@ async function renderBulk(body) {
         <div class="actions"><button class="btn" id="bulk-dead">Remove them</button></div>`) : ""}
 
       <h2>Import a CSV</h2>
-      <p class="hint">The same format as the old tracker: <code>Job URL</code>, <code>Job title</code>, <code>Company Name</code>, <code>Location</code>, <code>Published At</code>, <code>Status</code>. Only <code>Job title</code> is required.</p>
+      <p class="hint">The same format as the old tracker: <code>Job URL</code>, <code>Job title</code>, <code>Company Name</code>, <code>Location</code>, <code>Published At</code>, <code>Status</code>. A title or a link is enough: jobs with only a link get their title and description read from the posting right after the import.</p>
       <div class="actions"><label class="btn" style="margin:0">Choose CSV file<input type="file" id="bulk-csv" accept=".csv,text/csv" hidden></label></div>
     </section>`;
 
@@ -1122,6 +1144,7 @@ async function renderBulk(body) {
       toast(importSummary(r));
       state.jobs = null;
       renderBulk(body);
+      await fillAfterImport(r);
     } catch (err) { toast(err.message, "error"); }
     csv.value = "";
   });
@@ -1615,7 +1638,7 @@ async function renderSettings(params) {
         <label class="btn" style="margin:0">Import backup<input type="file" id="imp-json" accept=".json,application/json" hidden></label>
         <label class="btn" style="margin:0">Import CSV<input type="file" id="imp-csv" accept=".csv,text/csv" hidden></label>
       </div>
-      <p class="hint">CSV needs at least a <code>Job title</code> column; <code>Job URL</code>, <code>Company Name</code>, <code>Location</code>, <code>Status</code> and <code>Description</code> are used when present.</p>
+      <p class="hint">CSV needs a <code>Job title</code> or <code>Job URL</code> column; <code>Company Name</code>, <code>Location</code>, <code>Status</code> and <code>Description</code> are used when present. New jobs with a link but no description can be filled in from their postings right after the import.</p>
 
       <h2>Automations</h2>
       <p class="lead">n8n or other tools can add jobs by sending a POST to <code>${origin}/api/jobs</code> with the header <code>X-API-Key</code> set to your <code>API_TOKEN</code>. Send <code>title</code>, <code>url</code>, <code>company</code>, <code>description</code> and so on as JSON.</p>
@@ -1668,6 +1691,7 @@ async function renderSettings(params) {
       const r = await api(path, { method: "POST", body: fd });
       toast(importSummary(r));
       state.jobs = null;
+      await fillAfterImport(r);
     } catch (e) { toast(e.message, "error"); }
     input.value = "";
   });
@@ -1676,6 +1700,15 @@ async function renderSettings(params) {
   document.getElementById("logout")?.addEventListener("click", async () => {
     await api("/logout", { method: "POST" }); state.session = null; state.jobs = null; route();
   });
+}
+
+// After a CSV import, offer to read the new jobs' details from their links straight away.
+async function fillAfterImport(r) {
+  const ids = r?.to_fill || [];
+  if (!ids.length) return;
+  await new Promise((res) => setTimeout(res, 900));  // let the import summary be seen first
+  const done = await fillJobs(ids, `${ids.length} imported job${ids.length === 1 ? " has" : "s have"} a link but no description yet. Read ${ids.length === 1 ? "it" : "them"} from the posting${ids.length === 1 ? "" : "s"} now? Cancel to do it later from the No description filter.`);
+  if (done.length) state.jobs = null;
 }
 
 function importSummary(r) {
@@ -1757,7 +1790,7 @@ async function drawNightly(box) {
   box.querySelector("#n-time").addEventListener("change", (e) => e.target.value && save({ run_time: e.target.value }));
   box.querySelector("#n-engine").addEventListener("change", (e) => save({ engine: e.target.value }));
   box.querySelectorAll("[data-opt]").forEach((c) => c.addEventListener("change", () => save({ [c.dataset.opt]: c.checked })));
-  box.querySelector("#n-pick").addEventListener("click", () => { state.filter = "tonight"; localSet("jh.filter", "tonight"); });
+  box.querySelector("#n-pick").addEventListener("click", () => setFilters(["tonight"]));
   box.querySelector("#n-run")?.addEventListener("click", async () => {
     try { await api("/nightly/run", { method: "POST" }); toast("Started"); setTimeout(() => drawNightly(box), 800); }
     catch (e) { toast(e.message, "error"); }

@@ -465,6 +465,8 @@ def create_job(body: JobIn, user: User = Depends(current_user), db: Session = De
 
 
 DETAIL_FIELDS = ("company", "location", "salary", "employment_type", "posted_date", "description")
+# Title for a job imported with only a link; filling it in replaces it with the real title.
+PENDING_TITLE = "(title not read yet)"
 DEAD_LINK = "The title is just a link, which usually means the job was taken down. Not saved."
 
 
@@ -521,6 +523,9 @@ def refresh_job(job_id: int, body: Optional[EngineIn] = None, user: User = Depen
         return {"status": "failed", "reason": str(e), "ai_allowed": want != "none"}
     draft = _clean_draft(draft)
     filled = [k for k in DETAIL_FIELDS if draft.get(k) and not (getattr(j, k) or "").strip()]
+    if j.title == PENDING_TITLE and draft.get("title"):
+        filled.insert(0, "title")
+        draft["title"] = draft["title"][:300]
     for k in filled:
         setattr(j, k, draft[k])
     log.info("fill in job %s (%s) with %s: %s", j.id, j.url, method, ", ".join(filled) if filled else "nothing new found")
@@ -861,9 +866,9 @@ def _read_csv(raw: bytes, filename: str | None) -> list[dict]:
     cols = [k.strip().lower() for k in (rows[0].keys() if rows else csv.DictReader(io.StringIO(text), delimiter=delim).fieldnames or []) if k]
     log.info("CSV import: file %r read as %s, separated by %r, %d rows, columns: %s",
              filename, enc, delim, len(rows), ", ".join(cols) or "none")
-    if not any(c in cols for c in TITLE_COLS):
-        _csv_fail(filename, f"Couldn't find a job title column. The file has: {', '.join(cols) or 'no columns'}. "
-                            "Name the column with the job titles “Job title” and import again.")
+    if not any(c in cols for c in TITLE_COLS + URL_COLS):
+        _csv_fail(filename, f"Couldn't find a job title or link column. The file has: {', '.join(cols) or 'no columns'}. "
+                            "Name the column with the job titles “Job title” (or the links “Job URL”) and import again.")
     if not rows:
         _csv_fail(filename, "That file has column names but no jobs under them.")
     return rows
@@ -894,6 +899,7 @@ async def import_csv(file: UploadFile = File(...), user: User = Depends(current_
             newest[u] = d
 
     added = dupes = invalid = dead = redated = 0
+    to_fill: list[int] = []  # new jobs with a link but no description, to read from their postings next
     redated_ids: set[int] = set()
     for n, row in enumerate(rows, start=2):  # line 1 is the header
         raw_url = col(row, *URL_COLS)
@@ -901,10 +907,12 @@ async def import_csv(file: UploadFile = File(...), user: User = Depends(current_
         title = col(row, *TITLE_COLS)
         company = col(row, *COMPANY_COLS)
         what = f"line {n}: {logs.short(title, 60)!r} at {logs.short(company, 40)!r} {url or '(no link)'}"
-        if not title:
+        if not title and not url:
             invalid += 1
-            log.info("  %s -> skipped, no job title", what)
+            log.info("  %s -> skipped, no job title and no link", what)
             continue
+        if not title:
+            title = PENDING_TITLE  # only a link: the title is read from the posting when it's filled in
         if looks_like_url(title):
             dead += 1
             log.info("  %s -> left out, title is a link (posting taken down)", what)
@@ -935,11 +943,14 @@ async def import_csv(file: UploadFile = File(...), user: User = Depends(current_
         db.add(job)
         db.flush()
         added += 1
+        if job.url and not (job.description or "").strip():
+            to_fill.append(job.id)
         log.info("  %s -> added as job %s (stage %s)", what, job.id, job.status)
     db.commit()
     log.info("CSV import done: %d rows, %d added, %d already saved (%d of them reposted, date updated), "
              "%d without a title, %d taken down", len(rows), added, dupes, redated, invalid, dead)
-    return {"rows": len(rows), "added": added, "duplicates": dupes, "reposted": redated, "skipped": invalid, "dead": dead}
+    return {"rows": len(rows), "added": added, "duplicates": dupes, "reposted": redated, "skipped": invalid, "dead": dead,
+            "to_fill": to_fill}
 
 
 @app.get("/api/export")
