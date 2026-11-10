@@ -184,6 +184,10 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   margin-inline: calc(var(--gutter) * -1); padding-inline: var(--gutter);
 }
 .flow-legend::-webkit-scrollbar { display: none; }
+/* on wider screens, wrap the filters onto a second line so none are hidden off the edge */
+@media (min-width: 720px) {
+  .flow-legend { flex-wrap: wrap; overflow-x: visible; margin-inline: 0; padding-inline: 0; }
+}
 .stage {
   display: inline-flex; align-items: center; gap: 8px; flex: none;
   min-height: 34px; padding: 0 12px 0 10px; border-radius: 999px;
