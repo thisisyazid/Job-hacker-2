@@ -500,20 +500,22 @@ def refresh_job(job_id: int, body: Optional[EngineIn] = None, user: User = Depen
     j = own_job(job_id, user, db)
     if not j.url:
         return {"status": "failed", "reason": "This job has no link to read."}
+    want = body.engine if body else None  # "none" = don't use AI even as a last resort
     try:
-        draft, _ = fetch_job(j.url, engine=_engine_or_none(body.engine if body else None))
+        draft, method = fetch_job(j.url, engine=_engine_or_none(want), allow_ai=want != "none")
     except ScrapeError as e:
-        log.info("fill in job %s (%s): failed: %s", j.id, j.url, e)
-        return {"status": "failed", "reason": str(e)}
+        log.info("fill in job %s (%s): failed%s: %s", j.id, j.url, " (AI not allowed)" if want == "none" else "", e)
+        return {"status": "failed", "reason": str(e), "ai_allowed": want != "none"}
     draft = _clean_draft(draft)
     filled = [k for k in DETAIL_FIELDS if draft.get(k) and not (getattr(j, k) or "").strip()]
     for k in filled:
         setattr(j, k, draft[k])
-    log.info("fill in job %s (%s): %s", j.id, j.url, ", ".join(filled) if filled else "nothing new found")
+    log.info("fill in job %s (%s) with %s: %s", j.id, j.url, method, ", ".join(filled) if filled else "nothing new found")
     if filled:
         db.commit()
         db.refresh(j)
-    return {"status": "updated" if filled else "unchanged", "filled": filled, "job": job_out(j, full=False)}
+    return {"status": "updated" if filled else "unchanged", "filled": filled, "method": method,
+            "job": job_out(j, full=False)}
 
 
 @app.post("/api/cleanup/dead-links")

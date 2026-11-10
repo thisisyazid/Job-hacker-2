@@ -293,8 +293,9 @@ def page_text(html: str) -> tuple[str, str]:
     return title, html_to_text(str(main))
 
 
-def fetch_job(url: str, engine: str | None = None) -> tuple[dict, str]:
-    """Returns (draft, method). Raises ScrapeError when nothing usable was found."""
+def fetch_job(url: str, engine: str | None = None, allow_ai: bool = True) -> tuple[dict, str]:
+    """Returns (draft, method). Raises ScrapeError when nothing usable was found.
+    AI is only a last resort, and never used when allow_ai is False."""
     url = url.strip()
     if not re.match(r"^https?://", url, re.I):
         url = "https://" + url
@@ -323,7 +324,7 @@ def fetch_job(url: str, engine: str | None = None) -> tuple[dict, str]:
         return d, "structured data"
 
     title, text = page_text(html)
-    if ai.enabled(engine) and len(text) > 400:
+    if allow_ai and ai.enabled(engine) and len(text) > 400:
         try:
             ext = ai.extract_job(text[:20000], hint_title=title, engine=engine)
             if ext.get("title"):

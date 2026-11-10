@@ -169,6 +169,47 @@ async function withAI(opts, fn) {
   try { return await fn(eng); } finally { stop(); }
 }
 
+// Ask before filling in a job: may AI be used if free reading finds nothing?
+// Resolves to "local" | "claude" | "none", or null when cancelled.
+function askFillEngine() {
+  const all = engines();
+  const opts = [
+    all.local?.available && { id: "local", name: `Local (${all.local.model})`, note: "Free. Runs on your own computer, so it's slower." },
+    all.claude?.available && { id: "claude", name: "Claude", note: "Fast. Uses a few cents of API credit for this job." },
+    { id: "none", name: "No AI", note: "Only the free reading. If that finds nothing, paste the details yourself." },
+  ].filter(Boolean);
+  const saved = localGet("jh.fillEngine");
+  let pick = opts.some((o) => o.id === saved) ? saved : (opts.find((o) => o.id === currentEngine()) || opts[0]).id;
+  const dlg = document.createElement("dialog");
+  dlg.className = "pick";
+  dlg.innerHTML = html`
+    <form method="dialog">
+      <h2>Fill in missing details</h2>
+      <p>Job Hacker reads the posting first. That's free and works for LinkedIn, MyCareersFuture and most career pages.</p>
+      <p><strong>If that finds nothing, may it use AI as a last resort?</strong></p>
+      <div class="pick-opts" role="radiogroup" aria-label="AI as a last resort">
+        ${opts.map((o) => raw(html`<button type="button" role="radio" data-pick="${o.id}" aria-checked="${o.id === pick}"><span class="pick-n">${o.name}</span><span class="pick-d">${o.note}</span></button>`))}
+      </div>
+      <div class="row pick-actions">
+        <button class="btn btn-ghost" value="cancel">Cancel</button>
+        <button class="btn btn-primary" value="go">Fill in</button>
+      </div>
+    </form>`;
+  document.body.append(dlg);
+  dlg.querySelectorAll("[data-pick]").forEach((b) => b.addEventListener("click", () => {
+    pick = b.dataset.pick;
+    dlg.querySelectorAll("[data-pick]").forEach((x) => x.setAttribute("aria-checked", x === b));
+  }));
+  dlg.showModal();
+  dlg.querySelector('[aria-checked="true"]')?.focus();
+  return new Promise((resolve) => dlg.addEventListener("close", () => {
+    const go = dlg.returnValue === "go";
+    dlg.remove();
+    if (go) localSet("jh.fillEngine", pick);
+    resolve(go ? pick : null);
+  }));
+}
+
 // ---------- AI engine choice (Claude or the local Ollama model) ----------
 
 function engines() { return state.session?.engines || {}; }
@@ -953,19 +994,25 @@ async function renderJob(id) {
   document.getElementById("edit").addEventListener("click", () => renderEdit(j));
   // Re-read the posting and fill only the empty fields; nothing already there is changed.
   $main.querySelectorAll("[data-fill]").forEach((b) => b.addEventListener("click", async () => {
-    const buttons = $main.querySelectorAll("[data-fill]");
-    buttons.forEach((x) => { x.disabled = true; x.dataset.label = x.textContent; x.textContent = "Reading the posting…"; });
-    try {
-      const r = await api(`/jobs/${id}/refresh`, { method: "POST", json: { engine: currentEngine() } });
-      if (r.status === "updated") {
-        state.jobs = null;
-        toast(`Filled in: ${r.filled.map((k) => FILLABLE[k] || k.replace("_", " ")).join(", ")}`);
-        return renderJob(id);
-      }
-      toast(r.status === "unchanged" ? "Nothing new on the posting. Paste the details with Edit details instead."
-        : `${r.reason} Open the posting, copy the text and paste it with Edit details.`, r.status === "failed" ? "error" : "");
-    } catch (e) { toast(e.message, "error"); }
-    buttons.forEach((x) => { x.disabled = false; x.textContent = x.dataset.label; });
+    const eng = await askFillEngine();
+    if (!eng) return;
+    const who = eng === "local" ? "your local model" : "Claude";
+    const stop = aiWait("Filling in missing details",
+      eng === "none" ? "Reading the posting. AI won't be used." : `Reading the posting. If that finds nothing, ${who} picks the details out of the page.`,
+      eng === "local" ? "5 seconds to a few minutes" : "5–30 seconds", eng === "none" ? "the job site" : who, eng === "local" ? 300 : 60);
+    let r;
+    try { r = await api(`/jobs/${id}/refresh`, { method: "POST", json: { engine: eng } }); }
+    catch (e) { stop(); return toast(e.message, "error"); }
+    stop();
+    const via = r.method ? (/AI/.test(r.method) ? ` (with ${who})` : " (no AI needed)") : "";
+    if (r.status === "updated") {
+      state.jobs = null;
+      toast(`Filled in${via}: ${r.filled.map((k) => FILLABLE[k] || k.replace("_", " ")).join(", ")}`);
+      return renderJob(id);
+    }
+    toast(r.status === "unchanged" ? `Nothing new on the posting${via}. Paste the details with Edit details instead.`
+      : `${r.reason}${r.ai_allowed === false ? " Try again with AI, or" : ""} Open the posting, copy the text and paste it with Edit details.`,
+      r.status === "failed" ? "error" : "");
   }));
   document.getElementById("more")?.addEventListener("click", (e) => {
     document.getElementById("desc").classList.remove("clamped"); e.target.remove();
