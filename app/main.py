@@ -830,7 +830,7 @@ def download_docx(doc_id: int, user: User = Depends(current_user), db: Session =
 
 OLD_STATUS = {"not started": "saved", "in progress": "applied", "abandon": "closed", "abandoned": "closed",
               "applied": "applied", "interviewing": "interviewing", "offer": "offer", "closed": "closed",
-              "rejected": "closed", "saved": "saved"}
+              "rejected": "closed", "saved": "saved", "referral": "referral", "referred": "referral"}
 
 
 def _map_status(s: str | None) -> str:
