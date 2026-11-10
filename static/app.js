@@ -210,6 +210,32 @@ function askFillEngine() {
   }));
 }
 
+const FILL_LABELS = { description: "description", company: "company", location: "location", salary: "salary", employment_type: "job type", posted_date: "posted date" };
+
+// Re-read a job's posting and fill only its empty fields (nothing already there
+// is changed). Asks first whether AI may be used. Returns the updated job, or null.
+async function fillJob(id) {
+  const eng = await askFillEngine();
+  if (!eng) return null;
+  const who = eng === "local" ? "your local model" : "Claude";
+  const stop = aiWait("Filling in missing details",
+    eng === "none" ? "Reading the posting. AI won't be used." : `Reading the posting. If that finds nothing, ${who} picks the details out of the page.`,
+    eng === "local" ? "5 seconds to a few minutes" : "5–30 seconds", eng === "none" ? "the job site" : who, eng === "local" ? 300 : 60);
+  let r;
+  try { r = await api(`/jobs/${id}/refresh`, { method: "POST", json: { engine: eng } }); }
+  catch (e) { stop(); toast(e.message, "error"); return null; }
+  stop();
+  const via = r.method ? (/AI/.test(r.method) ? ` (with ${who})` : " (no AI needed)") : "";
+  if (r.status === "updated") {
+    toast(`Filled in${via}: ${r.filled.map((k) => FILL_LABELS[k] || k.replace("_", " ")).join(", ")}`);
+    return r.job;
+  }
+  toast(r.status === "unchanged" ? `Nothing new on the posting${via}. Paste the details with Edit details instead.`
+    : `${r.reason}${r.ai_allowed === false ? " Try again with AI, or" : ""} Open the posting, copy the text and paste it with Edit details.`,
+    r.status === "failed" ? "error" : "");
+  return null;
+}
+
 // ---------- AI engine choice (Claude or the local Ollama model) ----------
 
 function engines() { return state.session?.engines || {}; }
@@ -416,6 +442,17 @@ async function renderList(keep = false) {
   tbody.addEventListener("click", (e) => {
     const tn = e.target.closest("td.c-tn");
     if (tn) { if (e.target.tagName !== "INPUT") tn.querySelector("input:not(:disabled)")?.click(); return; }
+    const fill = e.target.closest("[data-fillrow]");
+    if (fill) {
+      const id = Number(fill.dataset.fillrow);
+      fillJob(id).then((updated) => {
+        if (!updated) return;
+        const i = state.jobs.findIndex((x) => x.id === id);
+        if (i >= 0) state.jobs[i] = { ...state.jobs[i], ...updated };
+        renderList(true);
+      });
+      return;
+    }
     if (e.target.closest("select, a, button, input")) return;
     const tr = e.target.closest("tr[data-id]");
     if (tr) location.hash = `#/job/${tr.dataset.id}`;
@@ -574,7 +611,9 @@ function rowHtml(j) {
       <td class="c-job">
         <a class="t" href="#/job/${j.id}"><span class="st-dot m" aria-hidden="true"></span><span>${j.title}</span></a>
         <span class="sub">${[j.company, j.location].filter(Boolean).join(", ")}</span>
-        ${j.has_description ? "" : raw('<span class="flag warn">No description</span>')}
+        ${j.has_description ? "" : j.url
+          ? raw(html`<button type="button" class="flag warn flag-fill" data-fillrow="${j.id}" title="Read the description from the posting">No description · Fill in</button>`)
+          : raw('<span class="flag warn" title="No link saved, so it can\'t be filled in automatically">No description</span>')}
         ${j.reposted_at ? raw(html`<span class="flag rp" title="${j.first_posted ? `First posted ${fmtPosted(j.first_posted, true)}` : "Posted again"}">Reposted</span>`) : ""}
         <span class="m-tags">${j.has_resume ? raw('<span class="flag ok">Resume</span>') : ""}</span>
       </td>
@@ -908,7 +947,7 @@ async function renderJob(id) {
   const personas = state.session.ai_enabled ? await api("/personas") : [];
   const facts = [["Location", j.location], ["Salary", j.salary], ["Job type", j.employment_type], ["Posted", fmtPosted(j.posted_date, true) + (j.reposted_at ? (j.first_posted ? ` (reposted; first posted ${fmtPosted(j.first_posted, true)})` : " (reposted)") : "")], ["Saved", longDate(j.created_at)]].filter(([, v]) => v);
   const desc = j.description || "";
-  const FILLABLE = { description: "description", company: "company", location: "location", salary: "salary", employment_type: "job type", posted_date: "posted date" };
+  const FILLABLE = FILL_LABELS;
   const missing = Object.keys(FILLABLE).filter((k) => !(j[k] || "").trim());
   const canFill = !!j.url && missing.length > 0;
 
@@ -992,27 +1031,8 @@ async function renderJob(id) {
   }));
 
   document.getElementById("edit").addEventListener("click", () => renderEdit(j));
-  // Re-read the posting and fill only the empty fields; nothing already there is changed.
   $main.querySelectorAll("[data-fill]").forEach((b) => b.addEventListener("click", async () => {
-    const eng = await askFillEngine();
-    if (!eng) return;
-    const who = eng === "local" ? "your local model" : "Claude";
-    const stop = aiWait("Filling in missing details",
-      eng === "none" ? "Reading the posting. AI won't be used." : `Reading the posting. If that finds nothing, ${who} picks the details out of the page.`,
-      eng === "local" ? "5 seconds to a few minutes" : "5–30 seconds", eng === "none" ? "the job site" : who, eng === "local" ? 300 : 60);
-    let r;
-    try { r = await api(`/jobs/${id}/refresh`, { method: "POST", json: { engine: eng } }); }
-    catch (e) { stop(); return toast(e.message, "error"); }
-    stop();
-    const via = r.method ? (/AI/.test(r.method) ? ` (with ${who})` : " (no AI needed)") : "";
-    if (r.status === "updated") {
-      state.jobs = null;
-      toast(`Filled in${via}: ${r.filled.map((k) => FILLABLE[k] || k.replace("_", " ")).join(", ")}`);
-      return renderJob(id);
-    }
-    toast(r.status === "unchanged" ? `Nothing new on the posting${via}. Paste the details with Edit details instead.`
-      : `${r.reason}${r.ai_allowed === false ? " Try again with AI, or" : ""} Open the posting, copy the text and paste it with Edit details.`,
-      r.status === "failed" ? "error" : "");
+    if (await fillJob(id)) { state.jobs = null; renderJob(id); }
   }));
   document.getElementById("more")?.addEventListener("click", (e) => {
     document.getElementById("desc").classList.remove("clamped"); e.target.remove();
