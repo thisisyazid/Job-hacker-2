@@ -1034,6 +1034,7 @@ function drawDocs(docs, openId) {
         ${isMd(d.content) ? raw(html`<div class="doc-text resume-view">${raw(mdToHtml(d.content))}</div>`) : raw(html`<div class="doc-text">${d.content}</div>`)}
         <div class="row">
           <button class="btn btn-primary" data-act="copy">Copy text</button>
+          <a class="btn" href="/api/documents/${d.id}/pdf" download>Download PDF</a>
           <a class="btn" href="/api/documents/${d.id}/docx" download>Download Word</a>
           <button class="btn" data-act="edit">Edit</button>
           <button class="btn btn-ghost btn-danger" data-act="del">Delete</button>

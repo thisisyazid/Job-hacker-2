@@ -1,4 +1,7 @@
+import re
+
 from app.docx_export import to_docx
+from app.pdf_export import to_pdf
 from app.resume_format import role_dates, sort_experience, to_plain
 
 MD = """# Jane Doe
@@ -64,3 +67,12 @@ def test_posted_date_normalize():
     assert normalize("5 hours ago", ref) == "2026-11-05"
     assert normalize("Reposted 1 day ago", ref) == "2026-11-04"
     assert normalize("") == "" and normalize("sometime") == "sometime"
+
+
+def test_pdf_export():
+    resume = to_pdf(sort_experience(MD), "resume")
+    assert resume[:5] == b"%PDF-" and b"+Carlito" in resume
+    letter = "Dear team,\n\nWhat I bring:\n- **Delivery** \u2013 on time\n- Coaching \u201cteams\u201d\n\nBest,\nJane"
+    assert to_pdf(letter, "cover_letter")[:5] == b"%PDF-"
+    long = "# A\nx@y.z\nHead\n\n## Experience\n" + "".join(f"### Co {i} | 2010 \u2013 2011\n- did things\n" * 3 for i in range(40))
+    assert len(re.findall(rb"/Type\s*/Page\b(?!s)", to_pdf(long, "resume"))) >= 2

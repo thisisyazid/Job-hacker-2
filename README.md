@@ -6,7 +6,7 @@ A self-hosted job-hunt workbench. Paste a link, get the job saved, move it throu
 - **Paste or type when a site won't share.** If a page needs a login, the app switches to "Paste text": paste the whole post and Claude fills in the fields. "Manual" lets you type everything yourself.
 - **Pipeline:** Saved → Applied → Interviewing → Offer → Closed, shown as a flow strip you can tap to filter.
 - **Fit check:** a 1–10 score against your resume and what you're looking for, with strengths, gaps and keywords.
-- **Tailored resume and cover letter** per job: copy the text, edit it, or download a Word file.
+- **Tailored resume and cover letter** per job: copy the text, edit it, or download it as a PDF or Word file.
 - **Phone-first:** large type, installable to your home screen, appears in the Android share menu.
 - **Claude or your local model:** every AI action has a Claude / Local switch. Local uses Ollama on the same machine (for example `qwen3:14b`), so it costs nothing per use.
 - **Overnight resumes:** pick jobs for tonight's list (in Settings, or "Add to tonight's list" on a job) and at a time you choose (01:00 by default) their resumes, fit checks or cover letters are made with the local model or Claude. Only picked jobs are done.
