@@ -411,7 +411,6 @@ async function renderList(keep = false) {
         <p>Have a list already? Use the <a href="#/add?mode=bulk">Bulk</a> tab to paste many links or import a CSV.</p>
       </div>`)}
     </div>`, { keep });
-  if (keep) scrollTo(0, y);
 
   document.getElementById("quickadd").addEventListener("submit", (e) => {
     e.preventDefault();
@@ -493,6 +492,7 @@ async function renderList(keep = false) {
     } catch (err) { sel.value = before; toast(err.message, "error"); }
   });
   drawRows();
+  if (keep) scrollTo(0, y);  // after the rows are back, or the short page snaps to the top
 }
 
 // Put jobs on / take them off tonight's list from the job table, then redraw it.
