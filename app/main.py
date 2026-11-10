@@ -723,6 +723,15 @@ def delete_document(doc_id: int, user: User = Depends(current_user), db: Session
     return {"ok": True}
 
 
+def _export_text(d: Document, user: User, db: Session) -> str:
+    """Cover letters get a greeting and sign-off if they're missing (older or local-model letters)."""
+    if d.kind != "cover_letter":
+        return d.content
+    p = (db.query(Persona).filter(Persona.user_id == user.id, Persona.name == d.persona_name).first()
+         if d.persona_name else None) or default_persona(db, user)
+    return ai.finish_letter(d.content, ai.candidate_name(p.resume_text) if p else "")
+
+
 def _doc_slug(d: Document, user: User) -> str:
     j = d.job
     return re.sub(r"[^A-Za-z0-9]+", "-", f"{user.name} {d.kind.replace('_', ' ')} {j.company or ''} {j.title}").strip("-")[:90]
@@ -732,7 +741,7 @@ def _doc_slug(d: Document, user: User) -> str:
 def download_pdf(doc_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     d = _own_doc(doc_id, user, db)
     try:
-        data = to_pdf(d.content, d.kind)
+        data = to_pdf(_export_text(d, user, db), d.kind)
     except Exception:
         log.exception("PDF export failed for document %s", d.id)
         raise HTTPException(500, "Couldn't make the PDF. Download the Word file instead; details are in today's log.")
@@ -745,7 +754,7 @@ def download_docx(doc_id: int, user: User = Depends(current_user), db: Session =
     d = _own_doc(doc_id, user, db)
     slug = _doc_slug(d, user)
     return Response(
-        to_docx(d.content, d.kind),
+        to_docx(_export_text(d, user, db), d.kind),
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         headers={"Content-Disposition": f'attachment; filename="{slug}.docx"'},
     )

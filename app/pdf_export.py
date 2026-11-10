@@ -115,7 +115,7 @@ def _resume(md: str) -> _Doc:
             pdf.set_font(FONT, "B", 11)
             pdf.set_text_color(*INK)
             pdf.set_x(pdf.l_margin)
-            pdf.multi_cell(pdf.epw - date_w - (2 if right else 0), _lh(11), _plain(left),
+            pdf.multi_cell(pdf.epw - date_w - (2 if right else 0), _lh(11), _plain(left), align="L",
                            new_x="LMARGIN", new_y="NEXT")
             if right:
                 after = pdf.get_y()
@@ -154,7 +154,7 @@ def _letter(text: str) -> _Doc:
                 pdf.set_font(FONT, "", 11)
                 pdf.set_text_color(*INK)
                 pdf.set_x(pdf.l_margin)
-                pdf.multi_cell(0, _lh(11), "\n".join(text), new_x="LMARGIN", new_y="NEXT")
+                pdf.multi_cell(0, _lh(11), "\n".join(text), align="L", new_x="LMARGIN", new_y="NEXT")
                 pdf.ln(2 * PT)
                 text.clear()
 

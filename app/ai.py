@@ -279,14 +279,74 @@ Hard rules:
 - Output ONLY the resume."""
 
 COVER_SYSTEM = """You are an expert cover letter writer. You get a candidate's resume and a target
-job. Write a specific cover letter under 350 words as clean plain text — no Markdown.
+job. Write a specific cover letter of 250–350 words as clean plain text — no Markdown, no
+asterisks, no headings, no bullet points.
+
+Use exactly this shape, with a blank line between each part:
+
+Dear <the hiring manager's name if the posting gives one, otherwise "Hiring Manager">,
+
+<paragraph 1: why this role at this company, opening with something specific to them>
+
+<paragraph 2: the most relevant experience from the resume, with concrete results>
+
+<paragraph 3: more relevant experience or skills that match the posting's requirements>
+
+<paragraph 4: a short close saying you'd welcome a conversation>
+
+Kind regards,
+<the candidate's full name>
 
 Rules:
-- Open with something specific to this role or company, not "I am writing to express my interest".
+- Always start with the "Dear ...," line and always end with "Kind regards," and the candidate's name.
+- Never open with "I am writing to express my interest".
 - Reference concrete details from the posting (team, product, requirements).
 - Use only real experience from the resume; never fabricate.
-- Plain, confident, warm tone. Short paragraphs.
-- Output ONLY the letter (greeting to sign-off)."""
+- No placeholders such as [Company] or [Your Name]: use the real names given.
+- Plain, confident, warm tone.
+- Output ONLY the letter, from "Dear" to the name. No notes before or after it."""
+
+CLOSINGS = re.compile(r"^(kind regards|best regards|warm regards|regards|sincerely|yours sincerely|yours faithfully|"
+                      r"best wishes|best|many thanks|thank you|thanks|warmly|cheers|respectfully)\b[ ,.!]*$", re.I)
+
+
+def candidate_name(resume: str) -> str:
+    """The name at the top of a resume: a "# Name" heading, else a short first line."""
+    for line in resume.splitlines():
+        s = line.strip().lstrip("#").strip().strip("*").strip()
+        if not s:
+            continue
+        words = s.split()
+        if (len(s) <= 60 and "@" not in s and not re.search(r"\d", s) and 2 <= len(words) <= 6
+                and words[0][:1].isupper() and words[-1][:1].isupper()):
+            return s
+        return ""
+    return ""
+
+
+def finish_letter(text: str, name: str = "") -> str:
+    """Make sure a cover letter reads as a letter, whatever the model returned:
+    plain text, a greeting at the top, and a sign-off with the name at the end."""
+    t = re.sub(r"^```(?:\w+)?\s*|\s*```$", "", text.strip())
+    t = re.sub(r"\*\*(.*?)\*\*", r"\1", t)                  # no Markdown bold
+    t = re.sub(r"^#+\s*", "", t, flags=re.M)                  # no Markdown headings
+    lines = t.splitlines()
+    # drop chatter before the letter ("Here is your cover letter:")
+    start = next((i for i, l in enumerate(lines) if re.match(r"^\s*(dear|hi|hello|to whom)\b", l, re.I)), None)
+    if start is not None and start <= 3:
+        lines = lines[start:]
+    elif lines and re.match(r"^\s*(here('| i)s|sure|certainly|below)\b.*:\s*$", lines[0], re.I):
+        lines = lines[1:]
+    t = "\n".join(lines).strip()
+    if not re.match(r"^(dear|hi|hello|to whom)\b", t, re.I):
+        t = "Dear Hiring Manager,\n\n" + t
+    tail = [l.strip() for l in t.splitlines() if l.strip()][-3:]
+    closing_at = next((i for i, l in enumerate(tail) if CLOSINGS.match(l)), None)
+    if closing_at is None:
+        t += "\n\nKind regards," + (f"\n{name}" if name else "")
+    elif closing_at == len(tail) - 1 and name:  # sign-off but no name under it
+        t += f"\n{name}"
+    return re.sub(r"\n{3,}", "\n\n", t).strip()
 
 
 def tailor_resume(resume: str, job, extra: str = "", engine: str | None = None) -> str:
@@ -304,8 +364,11 @@ def tailor_resume(resume: str, job, extra: str = "", engine: str | None = None) 
 def cover_letter(resume: str, job, extra: str = "", engine: str | None = None) -> str:
     if not resume.strip():
         raise AIError("Add your base resume in Settings first.")
-    user = f"RESUME:\n{resume}\n\nTARGET JOB:\n{_job_block(job)}"
+    name = candidate_name(resume)
+    company = (job.get("company") if isinstance(job, dict) else getattr(job, "company", "")) or ""
+    user = (f"CANDIDATE'S NAME: {name or '(take it from the top of the resume)'}\n"
+            f"COMPANY: {company or '(see the job below)'}\n\nRESUME:\n{resume}\n\nTARGET JOB:\n{_job_block(job)}")
     if extra.strip():
         user += f"\n\nEXTRA INSTRUCTIONS FROM THE CANDIDATE:\n{extra}"
     out = _ask(COVER_SYSTEM, user, max_tokens=1500, engine=engine)
-    return re.sub(r"^```(?:\w+)?\s*|\s*```$", "", out.strip())
+    return finish_letter(out, name)

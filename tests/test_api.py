@@ -110,7 +110,7 @@ def test_ai_fit_and_docs_with_stub(c, monkeypatch):
     f = c.post(f"/api/jobs/{j['id']}/fit").json()
     assert f["fit_score"] == 8 and f["fit"]["verdict"] == "Good"
     d = c.post(f"/api/jobs/{j['id']}/documents", json={"kind": "cover_letter"}).json()
-    assert d["content"] == "TAILORED TEXT" and d["persona_name"] == "Main"
+    assert d["content"] == "Dear Hiring Manager,\n\nTAILORED TEXT\n\nKind regards," and d["persona_name"] == "Main"
     assert c.patch(f"/api/documents/{d['id']}", json={"content": "edited"}).json()["content"] == "edited"
     r = c.get(f"/api/documents/{d['id']}/docx")
     assert r.status_code == 200 and r.content[:2] == b"PK"
@@ -209,7 +209,7 @@ def test_engine_choice_local_vs_claude(c, monkeypatch):
     d1 = c.post(f"/api/jobs/{j['id']}/documents", json={"kind": "cover_letter", "engine": "local"}).json()
     d2 = c.post(f"/api/jobs/{j['id']}/documents", json={"kind": "cover_letter", "engine": "claude"}).json()
     assert calls == ["local", "claude"]
-    assert d1["content"] == "LOCAL TEXT" and d1["engine"].startswith("Local")
+    assert "LOCAL TEXT" in d1["content"] and d1["engine"].startswith("Local")
     assert d2["engine"].startswith("Claude")
     assert c.post(f"/api/jobs/{j['id']}/documents", json={"kind": "resume", "engine": "bogus"}).status_code == 400
 
@@ -425,3 +425,21 @@ def test_fill_in_respects_no_ai(c, monkeypatch):
     assert "description" in r["filled"]
     c.post(f"/api/jobs/{j['id']}/refresh", json={"engine": "claude"})
     assert seen["allow_ai"] is True
+
+
+
+def test_cover_letter_always_reads_as_a_letter():
+    from app import ai
+    resume = "# Yazid bin Abd Rahim\nyazid@example.com | Singapore\nAgile Coach\n\n## Summary\nStuff."
+    assert ai.candidate_name(resume) == "Yazid bin Abd Rahim"
+    assert ai.candidate_name("My resume") == "" and ai.candidate_name("jane@x.com | 9123 4567") == ""
+    # what a local model sometimes returns: chatter, Markdown, no greeting, no sign-off
+    raw = "Here is your cover letter:\n\n**Hyundai's** mission caught my eye.\n\nI led teams at Citibank."
+    out = ai.finish_letter(raw, "Yazid bin Abd Rahim")
+    assert out.startswith("Dear Hiring Manager,\n\nHyundai's mission") and "**" not in out
+    assert out.endswith("Kind regards,\nYazid bin Abd Rahim")
+    # a proper letter is left as it is
+    good = "Dear Ms Lee,\n\nBody.\n\nBest regards,\nYazid bin Abd Rahim"
+    assert ai.finish_letter(good, "Yazid bin Abd Rahim") == good
+    # sign-off without the name gets the name
+    assert ai.finish_letter("Dear team,\n\nBody.\n\nSincerely,", "Yazid").endswith("Sincerely,\nYazid")
