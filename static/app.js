@@ -33,17 +33,13 @@ function setFilters(ids) {
   localSet("jh.filters", [...state.filters].join(","));
   localSet("jh.filter", state.filter);
 }
-// Tap a filter to switch it on, tap again to switch it off. All resets. Active is the default:
-// the first filter tapped replaces it, a stage replaces it, and tapping Active clears the stages.
+// Tap a filter to switch it on, tap again to switch it off; every filter toggles on its own.
+// All resets to everything; switching everything off falls back to Active.
 function toggleFilter(id) {
-  const f = new Set(state.filters);
-  const stageIds = STAGES.map((st) => st.id);
   if (id === "all") return ["all"];
-  if (f.has(id)) { f.delete(id); return [...f]; }
-  f.delete("all");
-  if (id === "active") stageIds.forEach((x) => f.delete(x));
-  else if (stageIds.includes(id) || (f.size === 1 && f.has("active"))) f.delete("active");
-  f.add(id);
+  const f = new Set(state.filters);
+  if (f.has(id)) f.delete(id);
+  else { f.delete("all"); f.add(id); }
   return [...f];
 }
 function jobPasses(j) {
