@@ -108,7 +108,7 @@ svg { width: 22px; height: 22px; stroke: currentColor; fill: none; stroke-width:
 .topnav .iconbtn svg { width: 20px; height: 20px; }
 
 main { max-width: var(--page); margin: 0 auto; padding: 8px var(--gutter) 96px; outline: none; }
-body.wide main { max-width: 1180px; }
+body.wide main { max-width: 1440px; }
 
 /* ---------- buttons & inputs ---------- */
 .btn {
@@ -245,15 +245,22 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .sheet tbody tr.none { cursor: default; }
 .sheet tbody tr.none td { color: var(--muted); padding: 22px 12px; }
 
-.c-stage { width: 178px; }
+.c-stage { width: 150px; }
 .c-job { width: auto; }
-.c-co { width: 15%; }
+.c-co { width: 17%; }
 .c-loc { width: 12%; }
+.c-ref { width: 11%; }
+.ref-edit { display: block; width: 100%; min-height: 28px; padding: 2px 4px; margin: 0 -4px; border: 0; border-radius: 6px; background: none;
+  color: var(--ink); font: inherit; text-align: left; cursor: text; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ref-edit:hover { background: var(--soft); }
+.ref-edit.empty { color: var(--muted); opacity: .55; }
+.ref-edit.empty:hover { opacity: 1; }
+.ref-input { width: 100%; min-height: 30px; padding: 2px 6px; border: 1.5px solid var(--accent); border-radius: 6px; font: inherit; background: var(--surface); color: var(--ink); }
 .c-fit { width: 58px; }
-.c-res { width: 96px; }
-.c-upd { width: 82px; }
-.c-post { width: 104px; }
-.c-app { width: 96px; }
+.c-res { width: 78px; }
+.c-upd { width: 74px; }
+.c-post { width: 86px; }
+.c-app { width: 86px; }
 .c-sel { width: 40px; text-align: center !important; cursor: pointer; padding-left: 10px !important; padding-right: 0 !important; }
 .c-sel input { width: 20px; height: 20px; margin: 0; vertical-align: middle; accent-color: var(--accent); cursor: pointer; }
 .sheet tr.picked td { background: color-mix(in srgb, var(--accent) 8%, transparent); }
@@ -265,7 +272,7 @@ body:has(.sel-bar:not([hidden])) #toast { bottom: 84px; }
 .sel-bar p { margin: 0; font-size: 16px; }
 .sel-tools { display: flex; flex-wrap: wrap; gap: 6px; }
 .sel-bar .btn-ghost { color: var(--surface); }
-.c-tn { width: 84px; text-align: center !important; cursor: pointer; }
+.c-tn { width: 74px; text-align: center !important; cursor: pointer; }
 .c-tn input { width: 22px; height: 22px; margin: 0; vertical-align: middle; accent-color: var(--accent); cursor: pointer; }
 .c-tn input:disabled { cursor: not-allowed; opacity: .35; }
 .sheet thead th.c-tn button { justify-content: center; }
@@ -287,6 +294,7 @@ body:has(.sel-bar:not([hidden])) #toast { bottom: 84px; }
 .sheet td.c-post, .sheet td.c-app { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .m-applied { display: none; font-size: 13px; color: var(--muted); font-weight: 600; }
 .sheet td.c-co, .sheet td.c-loc { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.co-loc { display: block; font-size: 14px; opacity: .8; overflow: hidden; text-overflow: ellipsis; }
 .sheet td.c-upd { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 
 .c-stage { white-space: nowrap; }
@@ -327,9 +335,10 @@ body:has(.sel-bar:not([hidden])) #toast { bottom: 84px; }
    title link. Drop Location and Updated; in portrait, company and location go under the title. */
 @media (min-width: 720px) and (max-width: 1199px) {
   .c-loc, .c-upd { display: none; }
+  .c-ref { width: 14%; }
 }
 @media (min-width: 720px) and (max-width: 899px) {
-  .c-co { display: none; }
+  .c-co, .c-ref { display: none; }
   .c-job .sub { display: block; }
   .c-stage { width: 150px; }
 }
@@ -337,7 +346,7 @@ body:has(.sel-bar:not([hidden])) #toast { bottom: 84px; }
 /* phone: two-line rows, fewer columns */
 @media (max-width: 719px) {
   .sheet-wrap { border-radius: var(--radius-s); margin: 0 calc(var(--gutter) * -0.5); }
-  .c-stage, .c-co, .c-loc, .c-res, .c-upd, .c-app { display: none; }
+  .c-stage, .c-co, .c-ref, .c-loc, .c-res, .c-upd, .c-app { display: none; }
   .m-applied { display: inline; }
   .sheet th, .sheet td { padding: 9px 10px; }
   .sheet thead th { font-size: 13px; }
