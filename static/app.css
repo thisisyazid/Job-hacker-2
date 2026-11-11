@@ -613,3 +613,8 @@ dialog.pick p strong { color: var(--ink); }
 
 .pick-remember { display: flex; align-items: center; gap: 8px; margin: -6px 0 14px; font-size: 15px; color: var(--muted); cursor: pointer; }
 .pick-remember input { width: 18px; height: 18px; accent-color: var(--accent); }
+
+.sort-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 0 2px 6px; font-size: 15px; color: var(--muted); }
+.sort-bar strong { color: var(--ink); }
+.sort-bar .btn-ghost { padding: 0 10px; min-height: 30px; }
+.sheet thead th .arr { margin-left: 3px; font-variant-numeric: tabular-nums; }
