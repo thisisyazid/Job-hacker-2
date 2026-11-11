@@ -76,3 +76,39 @@ def test_pdf_export():
     assert to_pdf(letter, "cover_letter")[:5] == b"%PDF-"
     long = "# A\nx@y.z\nHead\n\n## Experience\n" + "".join(f"### Co {i} | 2010 \u2013 2011\n- did things\n" * 3 for i in range(40))
     assert len(re.findall(rb"/Type\s*/Page\b(?!s)", to_pdf(long, "resume"))) >= 2
+
+
+def test_every_base_role_is_kept(monkeypatch):
+    from app import ai
+    from app.resume_format import base_roles, missing_roles
+    base = """Jane Tan
+jane@x.com | Singapore
+
+EXPERIENCE
+Agile Coach, Booking.com — Jan 2024 – Present
+- Coached 6 teams
+Scrum Master, Citibank | June 2022 – October 2023
+- Ran PI planning
+Product Owner, SIA (2014 - 2021)
+
+EDUCATION
+BSc Information Systems, NUS, 2010 – 2014"""
+    roles = base_roles(base)
+    assert len(roles) == 4 and roles[0].startswith("Agile Coach, Booking.com")
+    dropped = "# Jane Tan\n\n## Professional Experience\n### Citibank | June 2022 – October 2023\n- x\n### SIA | 2014 – 2021\n- y\n\n## Certifications & Education\n- **Education:** BSc, NUS, 2010 – 2014\n"
+    assert missing_roles(roles, dropped) == [roles[0]]
+    fixed = dropped.replace("## Professional Experience\n", "## Professional Experience\n### Booking.com | January 2024 – Present\n- z\n")
+    assert missing_roles(roles, fixed) == []
+
+    prompts = []
+    answers = iter([dropped, fixed])
+    monkeypatch.setattr(ai, "_ask", lambda system, user, **k: prompts.append(user) or next(answers))
+    out = ai.tailor_resume(base, {"title": "PM", "description": "d"}, engine="local")
+    assert "Booking.com" in out and out.index("Booking.com") < out.index("Citibank")
+    assert "ROLES IN THE BASE RESUME" in prompts[0] and "Booking.com" in prompts[0]
+    assert len(prompts) == 2 and "left out these roles" in prompts[1] and "Booking.com" in prompts[1]
+
+    # nothing missing: one call only
+    prompts.clear(); answers = iter([fixed])
+    ai.tailor_resume(base, {"title": "PM", "description": "d"}, engine="local")
+    assert len(prompts) == 1
