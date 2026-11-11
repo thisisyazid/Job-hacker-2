@@ -111,14 +111,25 @@ def _get_client():
     return _client
 
 
+# Current Claude models think before answering, and that thinking counts toward max_tokens.
+# A tight limit cuts the answer off part-way, so give every request generous room
+# (only what's used is billed). The per-feature numbers still apply to the local model.
+CLAUDE_MAX_TOKENS = 16000
+
+
 def _ask_claude(system: str, user: str, max_tokens: int) -> str:
     try:
         resp = _get_client().messages.create(
-            model=config.CLAUDE_MODEL, max_tokens=max_tokens, system=system,
+            model=config.CLAUDE_MODEL, max_tokens=max(max_tokens, CLAUDE_MAX_TOKENS), system=system,
             messages=[{"role": "user", "content": user}],
         )
     except Exception as e:  # network, auth, rate limit…
         raise AIError(f"Claude request failed: {e.__class__.__name__}: {e}") from e
+    stop = getattr(resp, "stop_reason", None)
+    if stop == "max_tokens":
+        raise AIError("Claude's answer was cut off before it finished. Try again.")
+    if stop == "refusal":
+        raise AIError("Claude declined this request. Try again, or use the local model.")
     return "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
 
 
