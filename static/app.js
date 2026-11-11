@@ -516,6 +516,7 @@ async function route() {
     if (parts[0] === "job" && parts[1]) return await renderJob(Number(parts[1]));
     if (parts[0] === "add") { markNav("add"); return renderAdd(params); }
     if (parts[0] === "settings") { markNav("settings"); return await renderSettings(params); }
+    if (parts[0] === "dashboard") { markNav("dashboard"); return await renderDashboard(); }
     return await renderList();
   } catch (e) {
     if (e.status === 401) return;
@@ -2150,6 +2151,293 @@ function handleShareIntent() {
     if (m) location.hash = "#/add?url=" + encodeURIComponent(m[0]);
     else if (cand) location.hash = "#/add?mode=paste";
   }
+}
+
+// ---------- dashboard ----------
+// Everything here is worked out in the browser from the job list, so it needs no extra server calls.
+const DASH_RANGES = [
+  { id: "7", label: "7 days", days: 7 },
+  { id: "30", label: "30 days", days: 30 },
+  { id: "90", label: "90 days", days: 90 },
+  { id: "365", label: "12 months", days: 365 },
+  { id: "all", label: "All time", days: 0 },
+];
+const DAY_MS = 86400000;
+const FOLLOW_UP_DAYS = 14, FOLLOW_UP_MAX = 60;  // past two months it's more likely a no
+
+function dayStr(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; }
+function dayDate(s) { return new Date(s + "T00:00:00"); }
+function addDays(s, n) { const d = dayDate(s); d.setDate(d.getDate() + n); return dayStr(d); }
+function daysBetween(a, b) { return Math.round((dayDate(b) - dayDate(a)) / DAY_MS); }
+const appliedDay = (j) => (j.applied_at ? localDay(j.applied_at) : "");
+
+// Buckets for the charts: days for short ranges, weeks (from Monday) for 90 days, months beyond that.
+function dashBuckets(from, to) {
+  const span = daysBetween(from, to) + 1;
+  const unit = span <= 31 ? "day" : span <= 120 ? "week" : "month";
+  const keyOf = (s) => {
+    if (unit === "day") return s;
+    if (unit === "month") return s.slice(0, 7);
+    const d = dayDate(s); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return dayStr(d);
+  };
+  const out = [];
+  for (let s = keyOf(from); s <= to;) {
+    const key = keyOf(s);
+    const d = dayDate(unit === "month" ? key + "-01" : key);
+    const label = unit === "month" ? d.toLocaleDateString(undefined, { month: "short", year: "2-digit" })
+      : d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+    const long = unit === "day" ? d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })
+      : unit === "week" ? `Week of ${d.toLocaleDateString(undefined, { day: "numeric", month: "short" })}`
+      : d.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+    out.push({ key, label, long });
+    if (unit === "day") s = addDays(s, 1);
+    else if (unit === "week") s = addDays(key, 7);
+    else { d.setMonth(d.getMonth() + 1); s = dayStr(d); }
+  }
+  return { unit, keyOf, list: out };
+}
+
+function dashData(rangeId) {
+  const jobs = state.jobs || [];
+  const today = dayStr(new Date());
+  const range = DASH_RANGES.find((r) => r.id === rangeId) || DASH_RANGES[1];
+  let from;
+  if (range.days) from = addDays(today, -(range.days - 1));
+  else {
+    const days = jobs.flatMap((j) => [appliedDay(j), isoDate(j.posted_date), localDay(j.created_at)]).filter(Boolean).sort();
+    from = days[0] && days[0] < today ? days[0] : addDays(today, -29);
+  }
+  const inRange = (s) => s && s >= from && s <= today;
+  const b = dashBuckets(from, today);
+  const count = (pick) => {
+    const m = new Map(b.list.map((x) => [x.key, 0]));
+    for (const j of jobs) { const s = pick(j); if (inRange(s)) { const k = b.keyOf(s); if (m.has(k)) m.set(k, m.get(k) + 1); } }
+    return b.list.map((x) => m.get(x.key));
+  };
+  const applied = jobs.filter((j) => inRange(appliedDay(j)));
+  // the same length of time just before, for the "vs previous" figure
+  const span = daysBetween(from, today) + 1;
+  const prevFrom = addDays(from, -span), prevTo = addDays(from, -1);
+  const prevApplied = range.days ? jobs.filter((j) => { const s = appliedDay(j); return s && s >= prevFrom && s <= prevTo; }).length : null;
+  const responded = applied.filter((j) => j.status === "interviewing" || j.status === "offer").length;
+  const lag = applied.map((j) => isoDate(j.posted_date) ? daysBetween(j.posted_date, appliedDay(j)) : null)
+    .filter((n) => n !== null && n >= 0).sort((x, y) => x - y);
+  const live = jobs.filter((j) => !j.archived_at);
+  const waiting = live.filter((j) => j.status === "applied" && j.applied_at);
+  const followUp = waiting.filter((j) => { const n = daysBetween(appliedDay(j), today); return n >= FOLLOW_UP_DAYS && n <= FOLLOW_UP_MAX; })
+    .sort((x, y) => x.applied_at.localeCompare(y.applied_at));
+  const stale = waiting.filter((j) => daysBetween(appliedDay(j), today) > FOLLOW_UP_MAX).length;
+  const strong = live.filter((j) => (j.status === "saved" || j.status === "referral") && j.fit_score >= 7)
+    .sort((x, y) => (y.fit_score - x.fit_score) || (isoDate(y.posted_date) || "").localeCompare(isoDate(x.posted_date) || ""));
+  const ever = jobs.filter((j) => j.applied_at || ["applied", "interviewing", "offer"].includes(j.status));
+  const tally = (list, keyFn) => {
+    const m = new Map();
+    for (const j of list) { const k = keyFn(j); if (k) m.set(k, (m.get(k) || 0) + 1); }
+    return [...m.entries()].sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0]));
+  };
+  return {
+    range, from, today, buckets: b,
+    appliedSeries: count(appliedDay),
+    postedSeries: count((j) => isoDate(j.posted_date)),
+    updatedSeries: count((j) => j.updated_at ? localDay(j.updated_at) : ""),
+    savedInRange: jobs.filter((j) => inRange(localDay(j.created_at))).length,
+    applied: applied.length, prevApplied, responded,
+    perWeek: applied.length / Math.max(1, span / 7),
+    lagMedian: lag.length ? lag[Math.floor(lag.length / 2)] : null, lagN: lag.length,
+    stages: STAGES.map((s) => ({ ...s, n: live.filter((j) => j.status === s.id).length })),
+    funnel: {
+      applied: ever.length,
+      interviewing: ever.filter((j) => j.status === "interviewing" || j.status === "offer").length,
+      offer: ever.filter((j) => j.status === "offer").length,
+    },
+    followUp, stale, strong,
+    sources: tally(applied, (j) => linkHost(j.url) || "No link"),
+    referrers: tally(jobs.filter((j) => j.referred_by && (!range.days || inRange(localDay(j.created_at)) || inRange(appliedDay(j)))),
+      (j) => j.referred_by.trim()),
+    hasAny: jobs.length > 0,
+  };
+}
+
+const fmtN = (n) => n.toLocaleString();
+const pct = (a, b) => (b ? `${Math.round((a / b) * 100)}%` : "–");
+// A clean whole-number gridline step, four steps reaching at least v.
+function niceStep(v) {
+  const need = Math.max(1, v / 4), mag = Math.pow(10, Math.floor(Math.log10(need)));
+  for (const m of [1, 2, 2.5, 5, 10]) if (m * mag >= need && Number.isInteger(m * mag)) return m * mag;
+  return 10 * mag;
+}
+
+// A small SVG chart: columns (one series) or lines (several), sized to its box and redrawn on resize.
+function drawChart(box) {
+  const spec = box._spec;
+  if (!spec) return;
+  const W = Math.max(280, box.clientWidth), H = W < 520 ? 200 : 240;
+  const pad = { l: 36, r: 12, t: 12, b: 28 };
+  const iw = W - pad.l - pad.r, ih = H - pad.t - pad.b;
+  const n = spec.labels.length;
+  const step = niceStep(Math.max(1, ...spec.series.flatMap((s) => s.values))), top = step * 4;
+  const y = (v) => pad.t + ih - (v / top) * ih;
+  const band = iw / n;
+  const cx = (i) => pad.l + band * i + band / 2;
+  const ticks = [0, step, 2 * step, 3 * step, top];
+  let svg = `<svg width="${W}" height="${H}" style="width:${W}px;height:${H}px" role="img" aria-label="${esc(spec.title)}">`;
+  for (const t of ticks) {
+    svg += `<line class="grid" x1="${pad.l}" x2="${W - pad.r}" y1="${y(t)}" y2="${y(t)}"/>`;
+    svg += `<text class="tick" x="${pad.l - 6}" y="${y(t) + 4}" text-anchor="end">${fmtN(t)}</text>`;
+  }
+  // x labels: as many as fit without crowding
+  const every = Math.max(1, Math.ceil(n / Math.floor(iw / 56)));
+  spec.labels.forEach((l, i) => {
+    if ((n - 1 - i) % every === 0) svg += `<text class="tick" x="${cx(i)}" y="${H - 8}" text-anchor="middle">${esc(l)}</text>`;
+  });
+  svg += `<line class="axis" x1="${pad.l}" x2="${W - pad.r}" y1="${y(0)}" y2="${y(0)}"/>`;
+  if (spec.kind === "bars") {
+    const bw = Math.max(2, Math.min(24, band - 2));
+    spec.series[0].values.forEach((v, i) => {
+      if (!v) return;
+      const h = Math.max(2, y(0) - y(v)), x = cx(i) - bw / 2, r = Math.min(4, bw / 2, h);
+      // rounded top, square at the baseline
+      svg += `<path class="bar" data-i="${i}" style="fill:${spec.series[0].color}" d="M${x},${y(0)}V${y(0) - h + r}Q${x},${y(0) - h} ${x + r},${y(0) - h}H${x + bw - r}Q${x + bw},${y(0) - h} ${x + bw},${y(0) - h + r}V${y(0)}Z"/>`;
+    });
+  } else {
+    for (const s of spec.series) {
+      svg += `<path class="area" style="fill:${s.color}" d="M${cx(0)},${y(0)}${s.values.map((v, i) => `L${cx(i)},${y(v)}`).join("")}L${cx(n - 1)},${y(0)}Z"/>`;
+      svg += `<path class="line" style="stroke:${s.color}" d="${s.values.map((v, i) => `${i ? "L" : "M"}${cx(i)},${y(v)}`).join("")}"/>`;
+      if (n <= 31) s.values.forEach((v, i) => { if (v) svg += `<circle class="dot" cx="${cx(i)}" cy="${y(v)}" r="3" style="fill:${s.color}"/>`; });
+    }
+  }
+  svg += `<line class="cross" x1="0" x2="0" y1="${pad.t}" y2="${y(0)}" visibility="hidden"/>`;
+  svg += `<rect class="hit" x="${pad.l}" y="${pad.t}" width="${iw}" height="${ih}" fill="transparent"/></svg>`;
+  box.querySelector(".chart-svg").innerHTML = svg;
+
+  const el = box.querySelector("svg"), tip = box.querySelector(".chart-tip"), cross = el.querySelector(".cross");
+  const show = (i) => {
+    el.querySelectorAll(".bar.on").forEach((b) => b.classList.remove("on"));
+    el.querySelector(`.bar[data-i="${i}"]`)?.classList.add("on");
+    cross.setAttribute("x1", cx(i)); cross.setAttribute("x2", cx(i)); cross.setAttribute("visibility", spec.kind === "bars" ? "hidden" : "visible");
+    tip.replaceChildren();
+    const h = document.createElement("div"); h.className = "tip-h"; h.textContent = spec.long[i]; tip.append(h);
+    for (const s of spec.series) {
+      const row = document.createElement("div"); row.className = "tip-row";
+      const key = document.createElement("span"); key.className = "tip-key"; key.style.background = s.color;
+      const v = document.createElement("strong"); v.textContent = fmtN(s.values[i]);
+      const name = document.createElement("span"); name.textContent = s.name;
+      row.append(key, v, name); tip.append(row);
+    }
+    tip.hidden = false;
+    const x = cx(i), tw = tip.offsetWidth;
+    tip.style.left = `${Math.min(W - tw, Math.max(0, x - tw / 2))}px`;
+  };
+  const hide = () => { tip.hidden = true; cross.setAttribute("visibility", "hidden"); el.querySelectorAll(".bar.on").forEach((b) => b.classList.remove("on")); };
+  el.addEventListener("pointermove", (e) => {
+    const r = el.getBoundingClientRect();
+    show(Math.min(n - 1, Math.max(0, Math.floor((e.clientX - r.left - pad.l) / band))));
+  });
+  el.addEventListener("pointerleave", hide);
+}
+
+function chartCard(id, title, sub, spec) {
+  const legend = spec.series.length > 1
+    ? html`<div class="legend">${spec.series.map((s) => raw(html`<span><i style="background:${s.color}"></i>${s.name}</span>`))}</div>` : "";
+  const rows = spec.labels.map((_, i) => raw(html`<tr><th scope="row">${spec.long[i]}</th>${spec.series.map((s) => raw(html`<td class="num">${fmtN(s.values[i])}</td>`))}</tr>`));
+  return html`<section class="dash-card dash-wide">
+    <div class="dash-h"><div><h2>${title}</h2><p class="hint">${sub}</p></div>${raw(legend)}</div>
+    <div class="chart" id="${id}"><div class="chart-svg"></div><div class="chart-tip" hidden></div></div>
+    <details class="chart-table"><summary>Show as a table</summary>
+      <table><thead><tr><th scope="col">${spec.unitLabel}</th>${spec.series.map((s) => raw(html`<th scope="col" class="num">${s.name}</th>`))}</tr></thead>
+      <tbody>${rows.reverse()}</tbody></table></details>
+  </section>`;
+}
+
+function barList(items, total, color, empty) {
+  if (!items.length) return html`<p class="hint">${empty}</p>`;
+  const max = Math.max(...items.map((x) => x[1]));
+  return html`<ul class="barlist">${items.map(([name, n, c]) => raw(html`<li>
+    <span class="bl-name" title="${name}">${name}</span>
+    <span class="bl-track"><span class="bl-fill" style="width:${(n / max) * 100}%;background:${c || color}"></span></span>
+    <span class="bl-n">${fmtN(n)}${total ? raw(html` <span class="hint">${pct(n, total)}</span>`) : ""}</span></li>`))}</ul>`;
+}
+
+function jobLinks(list, meta, empty, more) {
+  if (!list.length) return html`<p class="hint">${empty}</p>`;
+  return html`<ul class="dash-jobs">${list.slice(0, 6).map((j) => raw(html`<li><a href="#/job/${j.id}">${j.title}</a>
+    <span class="hint">${j.company}${j.company ? " · " : ""}${meta(j)}</span></li>`))}</ul>
+    ${list.length > 6 ? raw(html`<p class="hint">and ${list.length - 6} more. ${raw(more)}</p>`) : ""}`;
+}
+
+let dashResize = null;
+async function renderDashboard() {
+  if (!state.jobs) {
+    setView('<p class="hint">Loading your jobs…</p>');
+    state.jobs = await api("/jobs");
+  }
+  const rangeId = localGet("jh.dashRange") || "30";
+  const d = dashData(rangeId);
+  const unitLabel = { day: "Day", week: "Week", month: "Month" }[d.buckets.unit];
+  const labels = d.buckets.list.map((x) => x.label), long = d.buckets.list.map((x) => x.long);
+  const per = { day: "per day", week: "per week", month: "per month" }[d.buckets.unit];
+  const appliedSpec = { kind: "bars", title: "Jobs applied", labels, long, unitLabel,
+    series: [{ name: "Applied", color: "var(--st-applied)", values: d.appliedSeries }] };
+  const flowSpec = { kind: "lines", title: "Jobs posted and updated", labels, long, unitLabel,
+    series: [{ name: "Posted", color: "var(--viz-1)", values: d.postedSeries }, { name: "Updated", color: "var(--viz-2)", values: d.updatedSeries }] };
+  const delta = d.prevApplied === null ? "" : d.applied === d.prevApplied ? "same as the previous " + d.range.label
+    : `${d.applied > d.prevApplied ? "▲" : "▼"} ${Math.abs(d.applied - d.prevApplied)} vs the previous ${d.range.label}`;
+  const stageTotal = d.stages.reduce((a, s) => a + s.n, 0);
+  const followSince = (j) => `applied ${daysBetween(appliedDay(j), d.today)} days ago`;
+
+  setView(html`<div class="dash">
+    <div class="dash-top">
+      <h1>Dashboard</h1>
+      <div class="seg" role="group" aria-label="Time range">${DASH_RANGES.map((r) => raw(html`<button type="button" data-range="${r.id}" aria-pressed="${r.id === d.range.id}">${r.label}</button>`))}</div>
+    </div>
+    ${d.hasAny ? "" : raw('<div class="callout info"><p>No jobs yet. <a href="#/add">Add a job</a> and this page fills in as you apply.</p></div>')}
+    <div class="tiles">
+      <div class="tile tile-hero"><span class="tile-l">${d.range.days ? `Applied, last ${d.range.label}` : "Applied, all time"}</span>
+        <span class="tile-v">${fmtN(d.applied)}</span><span class="tile-d">${delta || raw("&nbsp;")}</span></div>
+      <div class="tile"><span class="tile-l">Applications a week</span><span class="tile-v">${d.perWeek >= 10 ? Math.round(d.perWeek) : d.perWeek.toFixed(1)}</span><span class="tile-d">on average in this period</span></div>
+      <div class="tile"><span class="tile-l">Reached interviews</span><span class="tile-v">${pct(d.responded, d.applied)}</span><span class="tile-d">${d.applied ? `${d.responded} of ${d.applied} now interviewing or offered` : "of jobs applied in this period"}</span></div>
+      <div class="tile"><span class="tile-l">Saved</span><span class="tile-v">${fmtN(d.savedInRange)}</span><span class="tile-d">new jobs added in this period</span></div>
+      <div class="tile"><span class="tile-l">Posted to applied</span><span class="tile-v">${d.lagMedian === null ? "–" : `${d.lagMedian} day${d.lagMedian === 1 ? "" : "s"}`}</span><span class="tile-d">${d.lagN ? `typical gap, from ${d.lagN} job${d.lagN === 1 ? "" : "s"} with a posted date` : "needs jobs with a posted date"}</span></div>
+    </div>
+    <div class="dash-grid">
+      ${raw(chartCard("ch-applied", "Jobs applied", `By the date you moved each job to Applied, ${per}.`, appliedSpec))}
+      ${raw(chartCard("ch-flow", "Jobs posted and updated", `Posted: the date on the job posting. Updated: the last time you changed the job in Job Hacker. Counted ${per}.`, flowSpec))}
+      <section class="dash-card">
+        <h2>Where things stand</h2><p class="hint">All active jobs right now, by stage.</p>
+        ${raw(barList(d.stages.filter((s) => s.n).map((s) => [s.label, s.n, stageColor(s.id)]), stageTotal, "var(--accent)", "No active jobs."))}
+        ${(() => { const f = d.funnel; return f.applied ? raw(html`<p class="funnel">Of <strong>${fmtN(f.applied)}</strong> jobs you've applied to, <strong>${pct(f.interviewing, f.applied)}</strong> reached interviews and <strong>${pct(f.offer, f.applied)}</strong> are at offer.</p>`) : ""; })()}
+      </section>
+      <section class="dash-card">
+        <h2>Time to follow up</h2><p class="hint">Applied 2 to 8 weeks ago and still at Applied, oldest first.</p>
+        ${raw(jobLinks(d.followUp, followSince, "Nothing to chase right now. Applications show up here two weeks after you apply.", '<a href="#/">See the job list</a>.'))}
+        ${d.stale ? raw(html`<p class="hint stale-note">${d.stale} more applied over 8 weeks ago with no change. Worth moving to Closed or archiving.</p>`) : ""}
+      </section>
+      <section class="dash-card">
+        <h2>Strong fits to apply for</h2><p class="hint">Saved or referred jobs with a fit score of 7 or more.</p>
+        ${raw(jobLinks(d.strong, (j) => `fit ${j.fit_score}/10${j.posted_date ? ` · posted ${fmtPosted(j.posted_date)}` : ""}`, "None yet. Run a fit check on saved jobs to find them.", '<a href="#/">See the job list</a>.'))}
+      </section>
+      <section class="dash-card">
+        <h2>Where you applied</h2><p class="hint">Job sites behind the applications in this period.</p>
+        ${raw(barList(d.sources.slice(0, 6), d.applied, "var(--st-applied)", "No applications in this period."))}
+      </section>
+      <section class="dash-card">
+        <h2>Referrals</h2><p class="hint">Jobs by who referred you${d.range.days ? ", saved or applied in this period" : ""}.</p>
+        ${raw(barList(d.referrers.slice(0, 6), 0, "var(--st-referral)", "No referrals yet. Add a name in a job's Referred by field."))}
+      </section>
+    </div>
+  </div>`);
+
+  $main.querySelectorAll("[data-range]").forEach((b) => b.addEventListener("click", () => {
+    localSet("jh.dashRange", b.dataset.range);
+    renderDashboard().then(() => window.scrollTo(0, 0));
+  }));
+  const boxes = [["ch-applied", appliedSpec], ["ch-flow", flowSpec]].map(([id, spec]) => {
+    const box = document.getElementById(id); box._spec = spec; drawChart(box); return box;
+  });
+  if (dashResize) window.removeEventListener("resize", dashResize);
+  let t = 0;
+  dashResize = () => { clearTimeout(t); t = setTimeout(() => boxes.forEach((b) => b.isConnected && drawChart(b)), 120); };
+  window.addEventListener("resize", dashResize);
 }
 
 // Column headers stick just under the top bar, whatever its height.
