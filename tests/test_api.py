@@ -666,3 +666,17 @@ def test_unfinished_cover_letter_is_retried_then_refused(monkeypatch):
     answers = iter([cut, cut])
     with pytest.raises(ai.AIError, match="unfinished twice"):
         ai.cover_letter("# Jane Tan\nCV", {"title": "PM", "description": "d"})
+
+
+def test_no_ai_when_adding_jobs(c, monkeypatch):
+    from app import ai, main
+    monkeypatch.setattr(ai, "enabled", lambda e=None: True)
+    monkeypatch.setattr(ai, "extract_job", lambda *a, **k: (_ for _ in ()).throw(AssertionError("AI was used")))
+    r = c.post("/api/extract/text", json={"text": "Senior PM at Acme. " * 5, "engine": "none"}).json()
+    assert r["method"] == "basic" and "wasn't used" in r["note"]
+    seen = {}
+    monkeypatch.setattr(main, "fetch_job", lambda url, engine=None, allow_ai=True: (seen.update(allow_ai=allow_ai), ({"title": "T"}, "structured data"))[1])
+    c.post("/api/extract/url", json={"url": "https://noai.example.com/1", "engine": "none"})
+    assert seen["allow_ai"] is False
+    c.post("/api/jobs/from-url", json={"url": "https://noai.example.com/2", "engine": "claude"})
+    assert seen["allow_ai"] is True

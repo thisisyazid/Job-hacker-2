@@ -214,28 +214,38 @@ async function withAI(opts, fn) {
 // Ask before filling in a job: may AI be used if free reading finds nothing?
 // Resolves to "local" | "claude" | "none", or null when cancelled.
 function askFillEngine(count = 1, intro = "") {
+  return askAI({ title: count > 1 ? `Fill in ${count} jobs` : "Fill in missing details", intro, go: "Fill in" });
+}
+
+// Ask which AI may be used (Local / Claude / No AI) before an action that might use it.
+// kind "lastResort": free reading first, AI only if that finds nothing. kind "extract": AI reads pasted text.
+// With remember, "Don't ask again" skips the question next time (switch it back on in Settings).
+function askAI({ title, intro = "", go = "Continue", kind = "lastResort", remember = false } = {}) {
   const all = engines();
   const opts = [
     all.local?.available && { id: "local", name: `Local (${all.local.model})`, note: "Free. Runs on your own computer, so it's slower." },
-    all.claude?.available && { id: "claude", name: `Claude ${claudeModelName()}`, note: "Fast. Uses a few cents of API credit for this job." },
-    { id: "none", name: "No AI", note: "Only the free reading. If that finds nothing, paste the details yourself." },
+    all.claude?.available && { id: "claude", name: `Claude ${claudeModelName()}`, note: "Fast. Uses a few cents of API credit." },
+    { id: "none", name: "No AI", note: kind === "extract" ? "The pasted text goes into the description; you fill in the title and company yourself."
+      : "Only the free reading. If that finds nothing, paste the details yourself." },
   ].filter(Boolean);
-  const saved = localGet("jh.fillEngine");
-  let pick = opts.some((o) => o.id === saved) ? saved : (opts.find((o) => o.id === currentEngine()) || opts[0]).id;
+  const savedPick = localGet("jh.fillEngine");
+  if (remember && localGet("jh.aiNoAsk") === "1" && opts.some((o) => o.id === savedPick)) return Promise.resolve(savedPick);
+  let pick = opts.some((o) => o.id === savedPick) ? savedPick : (opts.find((o) => o.id === currentEngine()) || opts[0]).id;
   const dlg = document.createElement("dialog");
   dlg.className = "pick";
   dlg.innerHTML = html`
     <form method="dialog">
-      <h2>${count > 1 ? `Fill in ${count} jobs` : "Fill in missing details"}</h2>
+      <h2>${title}</h2>
       ${intro ? raw(html`<p><strong>${intro}</strong></p>`) : ""}
-      <p>Job Hacker reads the posting first. That's free and works for LinkedIn, MyCareersFuture and most career pages.</p>
-      <p><strong>If that finds nothing, may it use AI as a last resort?</strong></p>
-      <div class="pick-opts" role="radiogroup" aria-label="AI as a last resort">
+      ${kind === "extract" ? raw("<p><strong>Which AI should pick out the title, company, salary and description from your paste?</strong></p>")
+        : raw("<p>Job Hacker reads the posting first. That's free and works for LinkedIn, MyCareersFuture and most career pages.</p><p><strong>If that finds nothing, may it use AI as a last resort?</strong></p>")}
+      <div class="pick-opts" role="radiogroup" aria-label="Which AI to use">
         ${opts.map((o) => raw(html`<button type="button" role="radio" data-pick="${o.id}" aria-checked="${o.id === pick}"><span class="pick-n">${o.name}</span><span class="pick-d">${o.note}</span></button>`))}
       </div>
+      ${remember ? raw('<label class="pick-remember"><input type="checkbox" id="pick-remember"> Don\'t ask again when adding jobs (switch back on in Settings)</label>') : ""}
       <div class="row pick-actions">
         <button class="btn btn-ghost" value="cancel">Cancel</button>
-        <button class="btn btn-primary" value="go">Fill in</button>
+        <button class="btn btn-primary" value="go">${go}</button>
       </div>
     </form>`;
   document.body.append(dlg);
@@ -246,10 +256,11 @@ function askFillEngine(count = 1, intro = "") {
   dlg.showModal();
   dlg.querySelector('[aria-checked="true"]')?.focus();
   return new Promise((resolve) => dlg.addEventListener("close", () => {
-    const go = dlg.returnValue === "go";
+    const ok = dlg.returnValue === "go";
+    if (ok && dlg.querySelector("#pick-remember")?.checked) localSet("jh.aiNoAsk", "1");
     dlg.remove();
-    if (go) localSet("jh.fillEngine", pick);
-    resolve(go ? pick : null);
+    if (ok) localSet("jh.fillEngine", pick);
+    resolve(ok ? pick : null);
   }));
 }
 
@@ -1145,12 +1156,14 @@ function showMode(mode, { url = "", auto = false, note = "" } = {}) {
     form.text.focus();
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
+      const eng = state.session.ai_enabled ? await askAI({ title: "Read the job post", kind: "extract", go: "Fill in", remember: true }) : "none";
+      if (!eng) return;
       const done = busy(e.submitter, "Reading the post");
       try {
-        const r = state.session.ai_enabled
-          ? await withAI({ title: "Reading the job post", detail: (w) => `${w} is picking out the title, company, salary and description from your paste.`, typical: { claude: "10–30 seconds", local: "30–90 seconds" } },
+        const r = eng !== "none"
+          ? await withAI({ engine: eng, title: "Reading the job post", detail: (w) => `${w} is picking out the title, company, salary and description from your paste.`, typical: { claude: "10–30 seconds", local: "30–90 seconds" } },
               (engine) => api("/extract/text", { json: { text: form.text.value, url: form.url.value, engine } }))
-          : await api("/extract/text", { json: { text: form.text.value, url: form.url.value } });
+          : await api("/extract/text", { json: { text: form.text.value, url: form.url.value, engine: "none" } });
         showReview(r.draft, r.method === "AI" ? `Filled in by ${r.engine || "AI"} from your paste. Check it over.` : (r.note || "Fill in the title and company."));
       } catch (err) { toast(err.message, "error"); done(); }
     });
@@ -1216,12 +1229,14 @@ async function renderBulk(body) {
     count.textContent = n ? `${n} link${n === 1 ? "" : "s"} found.` : "No links yet.";
     go.disabled = !n;
   });
-  go.addEventListener("click", () => {
+  go.addEventListener("click", async () => {
     const links = findLinks(ta.value);
+    const eng = state.session.ai_enabled ? await askAI({ title: `Save ${links.length} link${links.length === 1 ? "" : "s"}`, go: "Save all", remember: true }) : "none";
+    if (!eng) return;
     runBatch({
       items: links, out: document.getElementById("bulk-out"), btn: go, verb: "Saving",
       label: (u) => u.replace(/^https?:\/\/(www\.)?/, "").slice(0, 60),
-      call: (u) => api("/jobs/from-url", { json: { url: u, engine: currentEngine() } }),
+      call: (u) => api("/jobs/from-url", { json: { url: u, engine: eng } }),
       done: (failed) => {
         ta.value = failed.join("\n");
         ta.dispatchEvent(new Event("input"));
@@ -1328,12 +1343,14 @@ async function runBatch({ items, out, btn, verb, label, call, done }) {
 
 async function fetchLink(url, btn) {
   if (!url) return;
+  const eng = state.session.ai_enabled ? await askAI({ title: "Read the job link", go: "Read it", remember: true }) : "none";
+  if (!eng) return;
   const done = busy(btn, "Reading the page");
   try {
-    const r = await withAI({ title: "Reading the job page", detail: (W, w) => state.session.ai_enabled
+    const r = await withAI({ engine: eng === "none" ? null : eng, title: "Reading the job page", detail: (W, w) => eng !== "none"
         ? `Opening the link and looking for the job details. If the page doesn't list them clearly, ${w} reads it.`
-        : "Opening the link and looking for the job details.", typical: { claude: "5–30 seconds", local: "5–90 seconds" } },
-      (engine) => api("/extract/url", { json: { url, engine } }));
+        : "Opening the link and looking for the job details. AI won't be used.", typical: { claude: "5–30 seconds", local: "5–90 seconds" } },
+      () => api("/extract/url", { json: { url, engine: eng } }));
     if (r.existing_id) {
       document.getElementById("add-body").innerHTML = html`
         <div class="callout info"><p><strong>Already saved.</strong> ${r.title}${r.company ? ` at ${r.company}` : ""} is in your list.</p></div>
@@ -1752,6 +1769,7 @@ async function renderSettings(params) {
 
       <h2>Automations</h2>
       <p class="lead">n8n or other tools can add jobs by sending a POST to <code>${origin}/api/jobs</code> with the header <code>X-API-Key</code> set to your <code>API_TOKEN</code>. Send <code>title</code>, <code>url</code>, <code>company</code>, <code>description</code> and so on as JSON.</p>
+      <label class="pick-remember" style="margin:6px 0 10px"><input type="checkbox" id="ai-ask" ${localGet("jh.aiNoAsk") === "1" ? "" : "checked"}> Ask which AI to use (or none) each time I add a job</label>
       <p class="lead">AI models: Claude is <strong>${engines().claude?.available ? "on" : "off"}</strong>, and the local model (${engines().local?.model || "Ollama"}) is <strong>${engines().local?.available ? "on" : "off"}</strong>.${engines().local?.available || !engines().local?.reason ? "" : ` ${engines().local.reason}`}</p>
 
       <h2>Log files</h2>
@@ -1765,6 +1783,10 @@ async function renderSettings(params) {
   const reload = () => { state.jobs = null; state.session = null; route(); };
   drawNightly(document.getElementById("nightly"));
   drawLogs(document.getElementById("logs"));
+  document.getElementById("ai-ask")?.addEventListener("change", (e) => {
+    localSet("jh.aiNoAsk", e.target.checked ? "" : "1");
+    toast(e.target.checked ? "You'll be asked which AI to use when adding jobs" : "Adding jobs will use your last choice without asking");
+  });
   if (params?.get("at") === "nightly") document.getElementById("h-nightly")?.scrollIntoView({ block: "start" });
 
   $main.querySelectorAll("[data-persona]").forEach((b) => b.addEventListener("click", () => editPersona(personas.find((p) => p.id === Number(b.dataset.persona)), personas)));

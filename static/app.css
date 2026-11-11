@@ -610,3 +610,6 @@ dialog.pick p strong { color: var(--ink); }
 .engine-model { height: 30px; margin-left: 4px; padding: 0 6px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface);
   color: var(--ink); font: inherit; font-size: 14px; font-weight: 600; max-width: 100%; }
 .engine-one .engine-model { margin-left: 6px; }
+
+.pick-remember { display: flex; align-items: center; gap: 8px; margin: -6px 0 14px; font-size: 15px; color: var(--muted); cursor: pointer; }
+.pick-remember input { width: 18px; height: 18px; accent-color: var(--accent); }
