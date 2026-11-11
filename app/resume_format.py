@@ -32,6 +32,36 @@ def role_dates(heading: str) -> tuple[tuple[int, int], tuple[int, int]] | None:
     return (end, start or end)
 
 
+ROLE_LINE = re.compile(
+    r"(?:[A-Za-z]{3,9}\.?\s+)?(?:19|20)\d{2}\s*(?:[–—-]|to)\s*(?:(?:[A-Za-z]{3,9}\.?\s+)?(?:19|20)\d{2}|present|current|now|today)",
+    re.I)
+
+
+def base_roles(resume: str) -> list[str]:
+    """Lines of a resume that look like a role: they hold a date range such as
+    "Jan 2024 – Present" or "2014 - 2021". Works on pasted plain text as well as Markdown."""
+    out = []
+    for raw in resume.splitlines():
+        line = raw.strip().lstrip("#").strip().strip("*").strip()
+        if line and len(line) <= 200 and ROLE_LINE.search(line) and line not in out:
+            out.append(line)
+    return out
+
+
+def _span(text: str) -> tuple[int, int] | None:
+    """(end year, start year) of a role line; 'Present' counts as 9999."""
+    m = ROLE_LINE.search(text)
+    d = role_dates(m.group(0)) if m else None
+    return (d[0][0], d[1][0]) if d else None
+
+
+def missing_roles(base: list[str], md: str) -> list[str]:
+    """Roles from the base resume whose dates appear nowhere in the tailored resume.
+    Matching on years means a reworded company name or month still counts as present."""
+    have = {sp for l in md.splitlines() for sp in [_span(l)] if sp}
+    return [r for r in base if (_span(r) or None) and _span(r) not in have]
+
+
 def sort_experience(md: str) -> str:
     """Guarantee newest-first role order in the Professional Experience section,
     whatever the model did. Roles whose dates can't be read keep their position

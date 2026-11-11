@@ -352,12 +352,31 @@ def finish_letter(text: str, name: str = "") -> str:
 def tailor_resume(resume: str, job, extra: str = "", engine: str | None = None) -> str:
     if not resume.strip():
         raise AIError("Add your base resume in Settings first.")
+    from .resume_format import base_roles, missing_roles, sort_experience
+    roles = base_roles(resume)
     user = f"BASE RESUME:\n{resume}\n\nTARGET JOB:\n{_job_block(job)}"
+    if roles:
+        # A checklist helps smaller local models, which otherwise sometimes drop a role.
+        user += ("\n\nROLES IN THE BASE RESUME. Every one must appear under Professional Experience, "
+                 "most recent first, with its company, title and dates:\n" + "\n".join(f"- {r}" for r in roles))
     if extra.strip():
         user += f"\n\nEXTRA INSTRUCTIONS FROM THE CANDIDATE:\n{extra}"
-    from .resume_format import sort_experience
-    out = _ask(RESUME_SYSTEM, user, max_tokens=4000, engine=engine)
-    out = re.sub(r"^```(?:markdown|md)?\s*|\s*```$", "", out.strip())
+
+    def ask(prompt: str) -> str:
+        out = _ask(RESUME_SYSTEM, prompt, max_tokens=4000, engine=engine)
+        return re.sub(r"^```(?:markdown|md)?\s*|\s*```$", "", out.strip())
+
+    out = ask(user)
+    lost = missing_roles(roles, out)
+    if lost:
+        log.warning("tailored resume left out %d role(s): %s; asking again", len(lost), "; ".join(lost))
+        retry = ask(user + "\n\nIMPORTANT: a previous draft left out these roles. Include every one of them, "
+                    "with its company, title and dates, in date order:\n" + "\n".join(f"- {r}" for r in lost))
+        still = missing_roles(roles, retry)
+        if len(still) < len(lost):
+            out = retry
+        if still:
+            log.warning("tailored resume still leaves out: %s", "; ".join(still))
     return sort_experience(out)
 
 
