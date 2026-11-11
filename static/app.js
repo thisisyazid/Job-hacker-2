@@ -1757,6 +1757,7 @@ async function renderSettings(params) {
       <h2>Log files</h2>
       <p class="lead">Job Hacker keeps one log file per day of what it did: imports (and what each row became), links read, AI calls, overnight runs and errors. If something looks wrong, download that day's file and send it along. Logs never include your API key, resumes or job descriptions.</p>
       <div id="logs"><p class="hint">Loading…</p></div>
+      <p class="hint">Job Hacker version ${s.version || "unknown"}.</p>
 
       ${s.auth_required ? raw('<h2>Session</h2><div class="actions"><button class="btn" id="logout">Log out</button></div>') : ""}
     </div>`);

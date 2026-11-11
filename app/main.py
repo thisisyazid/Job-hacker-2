@@ -31,7 +31,7 @@ init_db()
 
 @app.on_event("startup")
 def _start_background():
-    log.info("app started (data in %s)", config.DATA_DIR)
+    log.info("app started, version %s (data in %s)", config.APP_VERSION, config.DATA_DIR)
     nightly.start_scheduler()
 
 OPEN_PATHS = {"/api/login", "/api/session", "/api/health", "/api/logout"}
@@ -256,7 +256,8 @@ def health():
 @app.get("/api/session")
 def session_info(request: Request, db: Session = Depends(get_db)):
     authed = auth.is_authed(request)
-    out = {"auth_required": bool(config.APP_PASSWORD), "logged_in": authed, "ai_enabled": ai.enabled()}
+    out = {"auth_required": bool(config.APP_PASSWORD), "logged_in": authed, "ai_enabled": ai.enabled(),
+           "version": config.APP_VERSION}
     if authed:
         out["engines"] = ai.engines()
         u = current_user(request, db)
@@ -849,6 +850,7 @@ def generate_document(job_id: int, body: GenIn, user: User = Depends(current_use
     except ai.AIError as e:
         raise HTTPException(502, str(e))
     d = Document(job_id=j.id, kind=body.kind, content=text, persona_name=p.name, engine=ai.label(eng))
+    log.info("saved %s for job %s by %s: %d words, ends %r", body.kind, j.id, d.engine, len(text.split()), text.strip()[-60:])
     db.add(d)
     db.commit()
     return doc_out(d)
