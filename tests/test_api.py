@@ -137,7 +137,7 @@ def test_csv_import(c):
                 "https://www.linkedin.com/jobs/view/2222222222,Agile Coach,Globex,Remote,2026-04-15,In progress\n"
                 ",,,,,\n")
     r = c.post("/api/import/csv", files={"file": ("jobs.csv", csv_text, "text/csv")}).json()
-    assert {k: v for k, v in r.items() if k != "to_fill"} == {"rows": 4, "added": 2, "duplicates": 1, "reposted": 0, "skipped": 1, "dead": 0}
+    assert {k: v for k, v in r.items() if k not in ("to_fill", "possible_duplicates")} == {"rows": 4, "added": 2, "duplicates": 1, "reposted": 0, "skipped": 1, "dead": 0}
     assert len(r["to_fill"]) == 2  # both new jobs have a link and no description
     statuses = {j["title"]: j["status"] for j in c.get("/api/jobs").json()}
     assert statuses["Agile Coach"] == "applied" and statuses["Scrum Master"] == "saved"
@@ -680,3 +680,19 @@ def test_no_ai_when_adding_jobs(c, monkeypatch):
     assert seen["allow_ai"] is False
     c.post("/api/jobs/from-url", json={"url": "https://noai.example.com/2", "engine": "claude"})
     assert seen["allow_ai"] is True
+
+
+
+def test_possible_duplicates_from_other_sites(c):
+    from app import dupes
+    assert dupes.norm_company("Acme Pte. Ltd.") == dupes.norm_company("ACME (Singapore)") == "acme"
+    assert dupes.similar_titles("Senior Product Manager (Payments)", "Sr Product Manager - Payments")
+    assert not dupes.similar_titles("Senior Product Manager", "Product Designer")
+    assert not dupes.same_job("Business Analyst", "", "Business Analyst", "")  # no company, no guess
+    c.post("/api/jobs", json={"title": "Senior Product Manager (Payments)", "company": "Acme Pte Ltd",
+                              "url": "https://www.linkedin.com/jobs/view/5550001111/"})
+    csv_text = ("Job title,Company Name,Job URL\n"
+                "Sr Product Manager - Payments,ACME,https://sg.indeed.com/viewjob?jk=abc123\n"
+                "Product Designer,Acme,https://sg.indeed.com/viewjob?jk=def456\n")
+    r = c.post("/api/import/csv", files={"file": ("dup.csv", csv_text, "text/csv")}).json()
+    assert r["added"] == 2 and r["possible_duplicates"] == 1

@@ -19,6 +19,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from . import ai, auth, config, logs, nightly
 from .dates import is_iso, normalize as normalize_date
 from .db import STATUSES, Document, Job, NightlyRun, Persona, User, get_db, init_db, now
+from . import dupes
 from .docx_export import to_docx
 from .pdf_export import to_pdf
 from .scrape import ScrapeError, fetch_job, looks_like_url, normalize_url
@@ -992,7 +993,12 @@ async def import_csv(file: UploadFile = File(...), user: User = Depends(current_
         if u and is_iso(d) and d > newest.get(u, ""):
             newest[u] = d
 
-    added = dupes = invalid = dead = redated = 0
+    # existing jobs by company, to spot the same job saved from another site (different link)
+    by_company: dict[str, list[tuple[int, str]]] = {}
+    for jid, jt, jc in db.query(Job.id, Job.title, Job.company).filter(Job.user_id == user.id):
+        if dupes.norm_company(jc):
+            by_company.setdefault(dupes.norm_company(jc), []).append((jid, jt))
+    added = n_dupes = invalid = dead = redated = possible = 0
     to_fill: list[int] = []  # new jobs with a link but no description, to read from their postings next
     redated_ids: set[int] = set()
     for n, row in enumerate(rows, start=2):  # line 1 is the header
@@ -1013,7 +1019,7 @@ async def import_csv(file: UploadFile = File(...), user: User = Depends(current_
             continue
         dupe = find_dupe(db, user, url)
         if dupe:
-            dupes += 1
+            n_dupes += 1
             latest = newest.get(url, "")
             old = dupe.posted_date or ""
             if latest and (not is_iso(old) or latest > old) and dupe.id not in redated_ids:
@@ -1041,10 +1047,19 @@ async def import_csv(file: UploadFile = File(...), user: User = Depends(current_
         if job.url and not (job.description or "").strip():
             to_fill.append(job.id)
         log.info("  %s -> added as job %s (stage %s)", what, job.id, job.status)
+        key = dupes.norm_company(job.company)
+        twin = next((jid for jid, jt in by_company.get(key, []) if dupes.similar_titles(jt, job.title)), None) if key else None
+        if twin:
+            possible += 1
+            log.info("     job %s looks like job %s (same company and title, different link)", job.id, twin)
+        if key:
+            by_company.setdefault(key, []).append((job.id, job.title))
     db.commit()
     log.info("CSV import done: %d rows, %d added, %d already saved (%d of them reposted, date updated), "
-             "%d without a title, %d taken down", len(rows), added, dupes, redated, invalid, dead)
-    return {"rows": len(rows), "added": added, "duplicates": dupes, "reposted": redated, "skipped": invalid, "dead": dead,
+             "%d without a title, %d taken down, %d look like jobs already saved from another site",
+             len(rows), added, n_dupes, redated, invalid, dead, possible)
+    return {"rows": len(rows), "added": added, "duplicates": n_dupes, "reposted": redated, "skipped": invalid, "dead": dead,
+            "possible_duplicates": possible,
             "to_fill": to_fill}
 
 
