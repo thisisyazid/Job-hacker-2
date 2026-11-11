@@ -103,6 +103,7 @@ def job_out(j: Job, full: bool = True) -> dict:
         "id": j.id, "url": j.url, "title": j.title, "company": j.company, "location": j.location,
         "salary": j.salary, "employment_type": j.employment_type, "posted_date": j.posted_date,
         "source": j.source, "status": j.status, "tags": j.tags, "fit_score": j.fit_score,
+        "referred_by": j.referred_by or "",
         "queued": bool(j.queued), "reposted_at": iso(j.reposted_at), "first_posted": j.first_posted or "",
         "archived_at": iso(j.archived_at),
         "applied_at": iso(j.applied_at), "created_at": iso(j.created_at), "updated_at": iso(j.updated_at),
@@ -146,6 +147,7 @@ class JobIn(BaseModel):
     status: str = "saved"
     tags: str = ""
     notes: str = ""
+    referred_by: str = Field(default="", max_length=200)
 
 
 class JobPatch(BaseModel):
@@ -160,6 +162,7 @@ class JobPatch(BaseModel):
     status: Optional[str] = None
     tags: Optional[str] = None
     notes: Optional[str] = None
+    referred_by: Optional[str] = Field(default=None, max_length=200)
     queued: Optional[bool] = None
     archived: Optional[bool] = None
 
@@ -456,7 +459,7 @@ def create_job(body: JobIn, user: User = Depends(current_user), db: Session = De
     dupe = find_dupe(db, user, url)
     if dupe:
         changed = False
-        for k in ("company", "location", "salary", "employment_type", "posted_date", "description"):
+        for k in ("company", "location", "salary", "employment_type", "posted_date", "description", "referred_by"):
             if data.get(k) and not getattr(dupe, k):
                 setattr(dupe, k, data[k])
                 changed = True
@@ -612,7 +615,7 @@ def _set_archived(j: Job, archived: bool) -> bool:
     return True
 
 
-EXPORT_COLS = ("Stage", "Job title", "Company", "Location", "Salary", "Job type", "Posted", "Applied", "Fit",
+EXPORT_COLS = ("Stage", "Job title", "Company", "Referred by", "Location", "Salary", "Job type", "Posted", "Applied", "Fit",
                "Resume", "Tonight", "Reposted", "Archived", "Tags", "Notes", "Job posting", "Job Hacker link")
 
 
@@ -636,7 +639,7 @@ def export_jobs(body: ExportIn, user: User = Depends(current_user), db: Session 
               "offer": "Offer", "closed": "Closed"}
 
     def row(j: Job) -> list:
-        return [labels.get(j.status, j.status), j.title, j.company, j.location, j.salary, j.employment_type, j.posted_date,
+        return [labels.get(j.status, j.status), j.title, j.company, j.referred_by or "", j.location, j.salary, j.employment_type, j.posted_date,
                 j.applied_at.date().isoformat() if j.applied_at else "", j.fit_score if j.fit_score is not None else "",
                 "Yes" if j.id in with_resume else "", "Yes" if j.queued else "", "Yes" if j.reposted_at else "",
                 "Yes" if j.archived_at else "", j.tags or "", j.notes or "", j.url or "",
@@ -673,7 +676,7 @@ def export_jobs(body: ExportIn, user: User = Depends(current_user), db: Session 
             if url and str(url).startswith(("http://", "https://")):
                 ws.cell(row=r, column=ci).hyperlink = str(url)
                 ws.cell(row=r, column=ci).font = link_font
-    widths = {"Stage": 13, "Job title": 44, "Company": 28, "Location": 22, "Salary": 18, "Job type": 14, "Posted": 12,
+    widths = {"Stage": 13, "Job title": 44, "Company": 28, "Referred by": 20, "Location": 22, "Salary": 18, "Job type": 14, "Posted": 12,
               "Applied": 12, "Fit": 6, "Resume": 9, "Tonight": 9, "Reposted": 10, "Archived": 10, "Tags": 16,
               "Notes": 30, "Job posting": 45, "Job Hacker link": 34}
     for i, name in enumerate(EXPORT_COLS, start=1):
@@ -1022,7 +1025,8 @@ async def import_csv(file: UploadFile = File(...), user: User = Depends(current_
                    company="" if looks_like_url(company) else company, location=col(row, "location"),
                    posted_date=newest.get(url) or col(row, *POSTED),
                    description=col(row, "description", "job description"),
-                   status=_map_status(col(row, "status")), source="csv")
+                   status=_map_status(col(row, "status")), source="csv",
+                   referred_by=col(row, "referred by", "referrer", "referral name", "referred_by")[:200])
         db.add(job)
         db.flush()
         added += 1
@@ -1046,7 +1050,7 @@ def export_all(db: Session = Depends(get_db)):
             "jobs": [{
                 **{k: getattr(j, k) for k in ("url", "title", "company", "location", "salary", "employment_type",
                                                "posted_date", "description", "source", "status", "tags", "notes",
-                                               "fit_score", "fit_json", "first_posted")},
+                                               "fit_score", "fit_json", "first_posted", "referred_by")},
                 "applied_at": iso(j.applied_at), "created_at": iso(j.created_at), "reposted_at": iso(j.reposted_at),
                 "archived_at": iso(j.archived_at),
                 "documents": [{"kind": d.kind, "content": d.content, "persona_name": d.persona_name,
@@ -1130,7 +1134,7 @@ async def import_backup(file: UploadFile = File(...), db: Session = Depends(get_
                 source=j.get("source") or "import", status=_map_status(j.get("status")),
                 fit_score=j.get("fit_score"), applied_at=_parse_dt(j.get("applied_at")),
                 reposted_at=_parse_dt(j.get("reposted_at")), first_posted=j.get("first_posted") or "",
-                archived_at=_parse_dt(j.get("archived_at")),
+                archived_at=_parse_dt(j.get("archived_at")), referred_by=(j.get("referred_by") or "")[:200],
                 created_at=_parse_dt(j.get("created_at")) or now(),
             )
             db.add(job)

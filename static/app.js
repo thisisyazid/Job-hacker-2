@@ -551,6 +551,8 @@ async function renderList(keep = false) {
   }));
   const tbody = document.getElementById("jobs");
   tbody.addEventListener("click", (e) => {
+    const ref = e.target.closest("button.ref-edit");
+    if (ref) { editReferrer(ref); return; }
     const sel = e.target.closest("td.c-sel");
     if (sel) { if (e.target.tagName !== "INPUT") sel.querySelector("input")?.click(); return; }
     const tn = e.target.closest("td.c-tn");
@@ -702,7 +704,7 @@ const SHEET_COLS = [
   { cls: "c-stage", label: "Stage", sort: "stage" },
   { cls: "c-job", label: "Job", sort: "title" },
   { cls: "c-co", label: "Company", sort: "company" },
-  { cls: "c-loc", label: "Location" },
+  { cls: "c-ref", label: "Referred by", sort: "ref" },
   { cls: "c-fit num", label: "Fit", sort: "fit" },
   { cls: "c-res", label: "Resume", sort: "resume" },
   { cls: "c-tn", label: "Tonight", sort: "tonight" },
@@ -716,7 +718,7 @@ function drawRows() {
   const needle = state.q.trim().toLowerCase();
   let rows = state.jobs.filter((j) => {
     if (!jobPasses(j)) return false;
-    if (needle && !`${j.title} ${j.company} ${j.location} ${j.tags}`.toLowerCase().includes(needle)) return false;
+    if (needle && !`${j.title} ${j.company} ${j.location} ${j.tags} ${j.referred_by || ""}`.toLowerCase().includes(needle)) return false;
     return true;
   });
   const dir = state.dir === "asc" ? 1 : -1;
@@ -729,6 +731,7 @@ function drawRows() {
     // not applied yet sorts as oldest, so the latest applications come first
     applied: (a, b) => (a.applied_at || "0").localeCompare(b.applied_at || "0"),
     company: (a, b) => txt(a.company, b.company) || txt(a.title, b.title),
+    ref: (a, b) => (!a.referred_by - !b.referred_by) * dir || txt(a.referred_by, b.referred_by),  // named first either way
     title: (a, b) => txt(a.title, b.title),
     resume: (a, b) => (a.has_resume - b.has_resume) || (b.updated_at || "").localeCompare(a.updated_at || ""),
     tonight: (a, b) => (a.queued - b.queued) || (a.has_description - b.has_description) || (b.updated_at || "").localeCompare(a.updated_at || ""),
@@ -803,6 +806,35 @@ async function exportRows(format, btn) {
     toast(`Exported ${ids.length} job${ids.length === 1 ? "" : "s"} to ${name}`);
   } catch (err) { toast(err.message, "error"); }
   btn.disabled = false; btn.textContent = old;
+}
+
+// Type who referred you straight into the list: Enter or leaving the box saves, Esc cancels.
+function editReferrer(btn) {
+  const id = Number(btn.dataset.ref);
+  const job = state.jobs.find((j) => j.id === id);
+  if (!job) return;
+  const input = Object.assign(document.createElement("input"), { type: "text", className: "ref-input", value: job.referred_by || "", maxLength: 200, placeholder: "Name" });
+  input.setAttribute("aria-label", `Referred by, for ${job.title}`);
+  btn.replaceWith(input);
+  input.focus(); input.select();
+  let done = false;
+  const finish = async (save) => {
+    if (done) return; done = true;
+    const v = input.value.trim();
+    if (save && v !== (job.referred_by || "")) {
+      try {
+        await api(`/jobs/${id}`, { method: "PATCH", json: { referred_by: v } });
+        job.referred_by = v;
+        toast(v ? `Referred by ${v}` : "Referrer removed");
+      } catch (err) { toast(err.message, "error"); }
+    }
+    renderList(true);
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); finish(true); }
+    else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); finish(false); }
+  });
+  input.addEventListener("blur", () => finish(true));
 }
 
 let selAnchor = null;  // the row a Shift+click range starts from
@@ -1000,7 +1032,7 @@ function rowHtml(j) {
       </select></td>
       <td class="c-job">
         <a class="t" href="#/job/${j.id}"><span class="st-dot m" aria-hidden="true"></span><span>${j.title}</span></a>
-        <span class="sub">${[j.company, j.location].filter(Boolean).join(", ")}</span>
+        <span class="sub">${[j.company, j.location, j.referred_by && `referred by ${j.referred_by}`].filter(Boolean).join(", ")}</span>
         ${j.has_description ? "" : j.url
           ? raw(html`<button type="button" class="flag warn flag-fill" data-fillrow="${j.id}" title="Read the description from the posting">No description · Fill in</button>`)
           : raw('<span class="flag warn" title="No link saved, so it can\'t be filled in automatically">No description</span>')}
@@ -1008,8 +1040,8 @@ function rowHtml(j) {
         ${j.reposted_at ? raw(html`<span class="flag rp" title="${j.first_posted ? `First posted ${fmtPosted(j.first_posted, true)}` : "Posted again"}">Reposted</span>`) : ""}
         <span class="m-tags">${j.has_resume ? raw('<span class="flag ok">Resume</span>') : ""}${j.applied_at ? raw(html`<span class="m-applied">Applied ${fmtPosted(localDay(j.applied_at))}</span>`) : ""}</span>
       </td>
-      <td class="c-co">${j.company || ""}</td>
-      <td class="c-loc">${j.location || ""}</td>
+      <td class="c-co">${j.company || ""}${j.location ? raw(html`<span class="co-loc">${j.location}</span>`) : ""}</td>
+      <td class="c-ref"><button type="button" class="ref-edit ${j.referred_by ? "" : "empty"}" data-ref="${j.id}" title="Who referred you? Click to ${j.referred_by ? "change" : "add"}">${j.referred_by || (j.status === "referral" ? "+ Add name" : "+")}</button></td>
       <td class="c-fit num">${j.fit_score ? raw(html`<span class="fitn" style="--fc:${raw(fitColor(j.fit_score))}" aria-label="Fit ${j.fit_score} out of 10">${j.fit_score}</span>`) : raw('<span class="nil">–</span>')}</td>
       <td class="c-res">${j.has_resume ? raw('<span class="flag ok">Ready</span>') : raw('<span class="nil">–</span>')}</td>
       <td class="c-tn"><input type="checkbox" data-q="${j.id}" ${j.queued ? "checked" : ""} ${j.has_description && !j.archived_at ? "" : "disabled"} aria-label="Tonight's list: ${j.title}" title="${j.archived_at ? "Archived" : j.has_description ? "Make overnight" : "Needs a description first"}"></td>
@@ -1021,7 +1053,7 @@ function rowHtml(j) {
 
 // ---------- add ----------
 
-const EMPTY = { title: "", company: "", location: "", salary: "", employment_type: "", posted_date: "", description: "", url: "" };
+const EMPTY = { title: "", company: "", location: "", salary: "", employment_type: "", posted_date: "", description: "", url: "", referred_by: "" };
 
 function renderAdd(params) {
   const url = params.get("url") || "";
@@ -1301,6 +1333,7 @@ function jobForm(d, submitLabel) {
         <div class="field"><label for="je">Job type</label><input id="je" name="employment_type" type="text" value="${d.employment_type}" placeholder="Full time, contract…"></div>
         <div class="field"><label for="jp">Posted</label><input id="jp" name="posted_date" type="text" value="${d.posted_date}"></div>
         <div class="field"><label for="ju">Link</label><input id="ju" name="url" type="url" inputmode="url" value="${d.url || ""}"></div>
+        <div class="field"><label for="jr">Referred by</label><input id="jr" name="referred_by" type="text" maxlength="200" value="${d.referred_by || ""}" placeholder="Who referred you (optional)"></div>
       </div>
       <div class="field">
         <label for="jd">Description</label>
@@ -1312,7 +1345,7 @@ function jobForm(d, submitLabel) {
 
 function formData(form) {
   const out = {};
-  ["title", "company", "location", "salary", "employment_type", "posted_date", "url", "description"].forEach((k) => out[k] = form[k].value.trim());
+  ["title", "company", "location", "salary", "employment_type", "posted_date", "url", "description", "referred_by"].forEach((k) => out[k] = form[k].value.trim());
   return out;
 }
 
@@ -1338,7 +1371,7 @@ function showReview(draft, note) {
 async function renderJob(id) {
   const j = await api(`/jobs/${id}`);
   const personas = state.session.ai_enabled ? await api("/personas") : [];
-  const facts = [["Location", j.location], ["Salary", j.salary], ["Job type", j.employment_type], ["Posted", fmtPosted(j.posted_date, true) + (j.reposted_at ? (j.first_posted ? ` (reposted; first posted ${fmtPosted(j.first_posted, true)})` : " (reposted)") : "")], ["Saved", longDate(j.created_at)]].filter(([, v]) => v);
+  const facts = [["Referred by", j.referred_by], ["Location", j.location], ["Salary", j.salary], ["Job type", j.employment_type], ["Posted", fmtPosted(j.posted_date, true) + (j.reposted_at ? (j.first_posted ? ` (reposted; first posted ${fmtPosted(j.first_posted, true)})` : " (reposted)") : "")], ["Saved", longDate(j.created_at)]].filter(([, v]) => v);
   const desc = j.description || "";
   const FILLABLE = FILL_LABELS;
   const missing = Object.keys(FILLABLE).filter((k) => !(j[k] || "").trim());

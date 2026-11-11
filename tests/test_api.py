@@ -560,3 +560,21 @@ def test_export_jobs_excel_and_csv(c):
     assert lines[0].startswith("Stage,Job title") and "'=SUM(1" in lines[1]
     assert "https://jobs.example.com/exp-a" in lines[2]
     assert c.post("/api/jobs/export", json={"job_ids": [], "format": "pdf"}).status_code == 400
+
+
+def test_referred_by(c):
+    import openpyxl
+    j = c.post("/api/jobs", json={"title": "Ref role", "status": "referral", "referred_by": "Sarah Lim"}).json()
+    assert j["referred_by"] == "Sarah Lim"
+    assert c.patch(f"/api/jobs/{j['id']}", json={"referred_by": "Sarah Tan"}).json()["referred_by"] == "Sarah Tan"
+    assert next(x for x in c.get("/api/jobs").json() if x["id"] == j["id"])["referred_by"] == "Sarah Tan"
+    r = c.post("/api/import/csv", files={"file": ("r.csv", "Job title,Referred by\nCSV ref role,Ahmad\n", "text/csv")}).json()
+    assert r["added"] == 1
+    assert next(x for x in c.get("/api/jobs").json() if x["title"] == "CSV ref role")["referred_by"] == "Ahmad"
+    x = c.post("/api/jobs/export", json={"job_ids": [j["id"]], "format": "xlsx"})
+    ws = openpyxl.load_workbook(io.BytesIO(x.content)).active
+    head = [h.value for h in ws[1]]
+    assert ws.cell(2, head.index("Referred by") + 1).value == "Sarah Tan"
+    backup = json.loads(c.get("/api/export").content)
+    assert next(y for p in backup["profiles"] for y in p["jobs"] if y["title"] == "Ref role")["referred_by"] == "Sarah Tan"
+    assert c.patch(f"/api/jobs/{j['id']}", json={"referred_by": "x" * 201}).status_code == 422
