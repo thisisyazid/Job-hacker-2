@@ -593,3 +593,7 @@ dialog.pick p strong { color: var(--ink); }
 .ctx-h { margin: 4px 10px 6px; font-weight: 700; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ctx-sub { margin: 2px 10px 2px; font-size: 13px; color: var(--muted); font-weight: 700; }
 .ctx-cur { margin-left: auto; font-size: 12px; color: var(--muted); }
+
+.sheet-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 16px; margin: 0 2px 8px; }
+.sheet-tools .sel-hint { margin: 0; flex: 1 1 420px; }
+.export-tools { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--muted); margin-left: auto; }
