@@ -23,6 +23,12 @@ API_TOKEN = os.environ.get("API_TOKEN", "")
 # AI features (extraction from pasted text, fit score, resume, cover letter)
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5-5")
+# Claude models you can pick in the app (id: name, price per million tokens in/out).
+CLAUDE_MODELS = {
+    "claude-sonnet-5-5": {"name": "Sonnet 5.5", "price": "$2 / $10"},
+    "claude-opus-5-5": {"name": "Opus 5.5", "price": "$4 / $20"},
+    "claude-fable-5-2": {"name": "Fable 5.2", "price": "$8 / $40"},
+}
 
 # Local model through Ollama. host.docker.internal reaches the Mac from inside
 # the container (Colima and Docker Desktop both provide it).

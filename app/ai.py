@@ -7,6 +7,7 @@ Every feature takes an optional engine; None means the default engine.
 All features degrade gracefully when neither is available — the UI hides them."""
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import re
@@ -75,6 +76,7 @@ def engines() -> dict:
     return {
         "claude": {"available": bool(config.ANTHROPIC_API_KEY), "label": "Claude",
                    "model": config.CLAUDE_MODEL,
+                   "models": [{"id": k, **v} for k, v in config.CLAUDE_MODELS.items()],
                    "reason": "" if config.ANTHROPIC_API_KEY else "ANTHROPIC_API_KEY isn't set."},
         "local": {"available": loc["ok"], "label": "Local", "model": config.OLLAMA_MODEL, "reason": loc["reason"]},
         "default": default_engine(),
@@ -97,8 +99,26 @@ def resolve(engine: str | None) -> str:
     return engine
 
 
+# The Claude model for the current request or overnight run: set from the app's model picker
+# (X-Claude-Model header) or the overnight settings; falls back to CLAUDE_MODEL.
+_claude_model: contextvars.ContextVar[str | None] = contextvars.ContextVar("claude_model", default=None)
+
+
+def use_claude_model(model: str | None) -> None:
+    _claude_model.set(model if model in config.CLAUDE_MODELS else None)
+
+
+def claude_model() -> str:
+    return _claude_model.get() or config.CLAUDE_MODEL
+
+
+def claude_model_name(model: str | None = None) -> str:
+    m = model or claude_model()
+    return config.CLAUDE_MODELS.get(m, {}).get("name", m)
+
+
 def label(engine: str) -> str:
-    return f"Claude ({config.CLAUDE_MODEL})" if engine == "claude" else f"Local ({config.OLLAMA_MODEL})"
+    return f"Claude {claude_model_name()}" if engine == "claude" else f"Local ({config.OLLAMA_MODEL})"
 
 
 # ---------- calls ----------
@@ -115,14 +135,24 @@ def _get_client():
 # A tight limit cuts the answer off part-way, so give every request generous room
 # (only what's used is billed). The per-feature numbers still apply to the local model.
 CLAUDE_MAX_TOKENS = 16000
+FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
 
 def _ask_claude(system: str, user: str, max_tokens: int) -> str:
+    import anthropic
+    model = claude_model()
+    args = dict(model=model, max_tokens=max(max_tokens, CLAUDE_MAX_TOKENS), system=system,
+                messages=[{"role": "user", "content": user}])
     try:
-        resp = _get_client().messages.create(
-            model=config.CLAUDE_MODEL, max_tokens=max(max_tokens, CLAUDE_MAX_TOKENS), system=system,
-            messages=[{"role": "user", "content": user}],
-        )
+        try:
+            # If the model's safety check declines, Anthropic retries on a suitable model in the same call.
+            resp = _get_client().messages.create(**args, extra_headers={"anthropic-beta": FALLBACK_BETA},
+                                                 extra_body={"fallbacks": "default"})
+        except anthropic.BadRequestError as e:
+            if "fallback" not in str(e).lower():
+                raise
+            log.info("server-side fallback not accepted for %s; sending without it", model)
+            resp = _get_client().messages.create(**args)
     except Exception as e:  # network, auth, rate limit…
         raise AIError(f"Claude request failed: {e.__class__.__name__}: {e}") from e
     stop = getattr(resp, "stop_reason", None)

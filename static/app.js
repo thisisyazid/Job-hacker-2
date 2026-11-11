@@ -79,6 +79,8 @@ const raw = (s) => ({ __raw: s });
 
 async function api(path, opts = {}) {
   const init = { credentials: "same-origin", headers: {}, ...opts };
+  const cm = claudeModel();
+  if (cm) init.headers["X-Claude-Model"] = cm;  // which Claude model AI actions use
   if (opts.json !== undefined) {
     init.method = init.method || "POST";
     init.headers["Content-Type"] = "application/json";
@@ -215,7 +217,7 @@ function askFillEngine(count = 1, intro = "") {
   const all = engines();
   const opts = [
     all.local?.available && { id: "local", name: `Local (${all.local.model})`, note: "Free. Runs on your own computer, so it's slower." },
-    all.claude?.available && { id: "claude", name: "Claude", note: "Fast. Uses a few cents of API credit for this job." },
+    all.claude?.available && { id: "claude", name: `Claude ${claudeModelName()}`, note: "Fast. Uses a few cents of API credit for this job." },
     { id: "none", name: "No AI", note: "Only the free reading. If that finds nothing, paste the details yourself." },
   ].filter(Boolean);
   const saved = localGet("jh.fillEngine");
@@ -318,7 +320,24 @@ async function fillJobs(ids, intro = "") {
 // ---------- AI engine choice (Claude or the local Ollama model) ----------
 
 function engines() { return state.session?.engines || {}; }
-function engineName(e) { return e === "local" ? `Local (${engines().local?.model || "Ollama"})` : "Claude"; }
+// The Claude model chosen in this browser ("" = the server's default).
+function claudeModels() { return engines().claude?.models || []; }
+function claudeModel() {
+  const saved = localGet("jh.claudeModel");
+  return saved && claudeModels().some((m) => m.id === saved) ? saved : "";
+}
+function claudeModelName(id = claudeModel() || engines().claude?.model) {
+  return claudeModels().find((m) => m.id === id)?.name || id || "";
+}
+function claudeModelSelect(cls = "engine-model") {
+  const ms = claudeModels();
+  if (ms.length < 2) return "";
+  const cur = claudeModel() || engines().claude?.model;
+  return html`<select class="${cls}" aria-label="Claude model" title="Which Claude model to use (price per million tokens in / out)">
+    ${ms.map((m) => raw(html`<option value="${m.id}" ${m.id === cur ? "selected" : ""}>${m.name} · ${m.price}</option>`))}
+  </select>`;
+}
+function engineName(e) { return e === "local" ? `Local (${engines().local?.model || "Ollama"})` : `Claude ${claudeModelName()}`; }
 function currentEngine() {
   const all = engines();
   const saved = localGet("jh.engine");
@@ -333,14 +352,21 @@ function enginePicker() {
       <span class="engine-l">Use</span>
       <button type="button" role="radio" data-engine="claude" aria-checked="${cur === "claude"}">Claude</button>
       <button type="button" role="radio" data-engine="local" aria-checked="${cur === "local"}">Local <span class="engine-m">${all.local.model}</span></button>
+      ${raw(claudeModelSelect())}
     </div>`;
   }
+  if (cur === "claude" && claudeModels().length > 1) return html`<p class="engine-one">Using Claude ${raw(claudeModelSelect())}</p>`;
   return cur ? html`<p class="engine-one">Using ${engineName(cur)}</p>` : "";
 }
 function bindEnginePickers(root = document) {
   root.querySelectorAll(".engine [data-engine]").forEach((b) => b.addEventListener("click", () => {
     localSet("jh.engine", b.dataset.engine);
     document.querySelectorAll(".engine [data-engine]").forEach((x) => x.setAttribute("aria-checked", x.dataset.engine === b.dataset.engine));
+  }));
+  root.querySelectorAll(".engine-model").forEach((sel) => sel.addEventListener("change", () => {
+    localSet("jh.claudeModel", sel.value);
+    document.querySelectorAll(".engine-model").forEach((x) => { x.value = sel.value; });
+    toast(`Claude ${claudeModelName(sel.value)} will be used for AI actions in this browser`);
   }));
 }
 
@@ -1845,6 +1871,9 @@ async function drawNightly(box) {
             <option value="local" ${st.engine === "local" ? "selected" : ""}>${engineName("local")}</option>
             <option value="claude" ${st.engine === "claude" ? "selected" : ""}>Claude</option>
           </select>
+          ${st.engine === "claude" && claudeModels().length > 1 ? raw(html`<select id="n-cmodel" aria-label="Claude model for overnight runs" style="margin-top:6px">
+            ${claudeModels().map((m) => raw(html`<option value="${m.id}" ${m.id === (st.claude_model || engines().claude?.model) ? "selected" : ""}>Claude ${m.name} · ${m.price}</option>`))}
+          </select>`) : ""}
           ${engineOk ? "" : raw(html`<p class="hint warn-text">${all[st.engine]?.reason || "Not available right now."}</p>`)}
         </div>
       </div>
@@ -1880,6 +1909,7 @@ async function drawNightly(box) {
   box.querySelector("#n-on").addEventListener("change", (e) => save({ enabled: e.target.checked }));
   box.querySelector("#n-time").addEventListener("change", (e) => e.target.value && save({ run_time: e.target.value }));
   box.querySelector("#n-engine").addEventListener("change", (e) => save({ engine: e.target.value }));
+  box.querySelector("#n-cmodel")?.addEventListener("change", (e) => save({ claude_model: e.target.value }));
   box.querySelector("#n-max").addEventListener("change", (e) => {
     const v = Math.round(Number(e.target.value));
     if (v >= 1 && v <= 2000) save({ max_jobs: v }); else { toast("Pick a number from 1 to 2000.", "error"); e.target.value = st.max_jobs; }
