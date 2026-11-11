@@ -112,3 +112,7 @@ app/db.py           SQLite models
 static/             the app (index.html, app.css, app.js, PWA files)
 scripts/            one-off tools (old tracker export)
 ```
+
+## Who made this
+
+Job Hacker is designed and built by Yazid. Want an app like this for you or your team? Get in touch at [thisisyazid.com](https://thisisyazid.com).
