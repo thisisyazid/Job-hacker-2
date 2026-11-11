@@ -31,7 +31,7 @@ init_db()
 
 @app.on_event("startup")
 def _start_background():
-    log.info("app started (data in %s)", config.DATA_DIR)
+    log.info("app started, version %s (data in %s)", config.APP_VERSION, config.DATA_DIR)
     nightly.start_scheduler()
 
 OPEN_PATHS = {"/api/login", "/api/session", "/api/health", "/api/logout"}
@@ -44,6 +44,7 @@ async def guard(request: Request, call_next):
         return JSONResponse({"detail": "Log in to continue."}, status_code=401)
     if not path.startswith("/api/"):
         return await call_next(request)
+    ai.use_claude_model(request.headers.get("x-claude-model"))
     t0 = time.monotonic()
     try:
         resp = await call_next(request)
@@ -219,6 +220,7 @@ class NightlyIn(BaseModel):
     do_cover: Optional[bool] = None
     max_jobs: Optional[int] = Field(default=None, ge=1, le=2000)
     stop_at: Optional[str] = Field(default=None, pattern=r"^(([01]\d|2[0-3]):[0-5]\d)?$")
+    claude_model: Optional[str] = None
 
 
 class DocPatch(BaseModel):
@@ -254,7 +256,8 @@ def health():
 @app.get("/api/session")
 def session_info(request: Request, db: Session = Depends(get_db)):
     authed = auth.is_authed(request)
-    out = {"auth_required": bool(config.APP_PASSWORD), "logged_in": authed, "ai_enabled": ai.enabled()}
+    out = {"auth_required": bool(config.APP_PASSWORD), "logged_in": authed, "ai_enabled": ai.enabled(),
+           "version": config.APP_VERSION}
     if authed:
         out["engines"] = ai.engines()
         u = current_user(request, db)
@@ -748,7 +751,7 @@ def _nightly_out(db: Session, user: User) -> dict:
     runs = db.query(NightlyRun).filter(NightlyRun.user_id == user.id).order_by(NightlyRun.id.desc()).limit(5).all()
     return {
         "settings": {k: getattr(s, k) for k in ("enabled", "run_time", "engine", "do_resume", "do_fit", "do_cover",
-                                                         "max_jobs", "stop_at")},
+                                                         "max_jobs", "stop_at", "claude_model")},
         "timezone": config.TIMEZONE,
         "running": nightly.is_running(),
         "pending": nightly.summary(db, user.id, s),
@@ -771,6 +774,8 @@ def update_nightly(body: NightlyIn, user: User = Depends(current_user), db: Sess
     data = body.model_dump(exclude_unset=True)
     if "engine" in data and data["engine"] not in ai.ENGINES:
         raise HTTPException(400, "engine must be claude or local")
+    if data.get("claude_model") and data["claude_model"] not in config.CLAUDE_MODELS:
+        raise HTTPException(400, f"claude_model must be one of: {', '.join(config.CLAUDE_MODELS)}")
     for k, v in data.items():
         if v is not None:
             setattr(s, k, v)
@@ -845,6 +850,7 @@ def generate_document(job_id: int, body: GenIn, user: User = Depends(current_use
     except ai.AIError as e:
         raise HTTPException(502, str(e))
     d = Document(job_id=j.id, kind=body.kind, content=text, persona_name=p.name, engine=ai.label(eng))
+    log.info("saved %s for job %s by %s: %d words, ends %r", body.kind, j.id, d.engine, len(text.split()), text.strip()[-60:])
     db.add(d)
     db.commit()
     return doc_out(d)

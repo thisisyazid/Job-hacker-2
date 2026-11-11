@@ -136,6 +136,7 @@ def run_for_user(user_id: int, trigger: str = "schedule") -> int | None:
                              ": " + entries[-1].get("note", ""))
                 db.commit()
 
+            ai.use_claude_model(s.claude_model or None)  # this run's thread uses the overnight model
             try:
                 engine = ai.resolve(s.engine)
             except ai.AIError as e:
@@ -180,6 +181,7 @@ def run_for_user(user_id: int, trigger: str = "schedule") -> int | None:
                     else:
                         fn = ai.tailor_resume if task == "resume" else ai.cover_letter
                         text = fn(persona.resume_text, job, "", engine=engine)
+                        log.info("overnight %s for job %s: %d words, ends %r", task, job.id, len(text.split()), text.strip()[-60:])
                         db.add(Document(job_id=job.id, kind=task, content=text, persona_name=persona.name,
                                         engine=ai.label(engine), nightly=True))
                     entry["ok"] = True
