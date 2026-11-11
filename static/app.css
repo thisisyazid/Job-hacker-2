@@ -114,7 +114,8 @@ svg { width: 22px; height: 22px; stroke: currentColor; fill: none; stroke-width:
 .topnav .iconbtn svg { width: 20px; height: 20px; }
 .topnav .iconbtn[aria-current=page] { background: var(--accent-soft); color: var(--accent); }
 
-main { max-width: var(--page); margin: 0 auto; padding: 8px var(--gutter) 96px; outline: none; }
+main { max-width: var(--page); margin: 0 auto; padding: 8px var(--gutter) 40px; outline: none; }
+body.no-credit main { padding-bottom: 96px; }
 body.wide main { max-width: 1440px; }
 
 /* ---------- buttons & inputs ---------- */
@@ -692,3 +693,11 @@ dialog.pick p strong { color: var(--ink); }
 @media (max-width: 760px) { .dash-grid { grid-template-columns: minmax(0, 1fr); } .tile-hero .tile-v { font-size: 40px; } }
 .dash { max-width: 1200px; margin: 0 auto; }
 .stale-note { margin-top: 14px; font-size: 14px; }
+
+/* ---------- "built by" footer: quiet, at the very end of the page ---------- */
+.credit { max-width: var(--page); margin: 0 auto; padding: 16px var(--gutter) calc(88px + env(safe-area-inset-bottom)); text-align: center; }
+body.wide .credit { max-width: 1440px; }
+.credit p { margin: 0; padding-top: 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 14px; }
+.credit a { color: var(--muted); font-weight: 600; }
+.credit a:hover { color: var(--accent); }
+body.no-credit .credit { display: none; }

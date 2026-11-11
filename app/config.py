@@ -22,7 +22,7 @@ API_TOKEN = os.environ.get("API_TOKEN", "")
 
 # AI features (extraction from pasted text, fit score, resume, cover letter)
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-APP_VERSION = "1.10.0"  # shown in Settings and the log, to tell which build is running
+APP_VERSION = "1.10.1"  # shown in Settings and the log, to tell which build is running
 
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5-5")
 # Claude models you can pick in the app (id: name, price per million tokens in/out).

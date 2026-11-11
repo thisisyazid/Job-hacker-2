@@ -512,6 +512,8 @@ async function route() {
   const { parts, params } = parseHash();
   document.querySelectorAll("[data-nav]").forEach((a) => a.removeAttribute("aria-current"));
   document.body.classList.toggle("wide", !parts.length || !["job", "add", "settings"].includes(parts[0]));
+  // The "built by" footer stays out of the way while adding or working on a job (Settings has it under About).
+  document.body.classList.toggle("no-credit", ["job", "add", "settings"].includes(parts[0]));
   try {
     if (parts[0] === "job" && parts[1]) return await renderJob(Number(parts[1]));
     if (parts[0] === "add") { markNav("add"); return renderAdd(params); }
@@ -1901,7 +1903,9 @@ async function renderSettings(params) {
       <h2>Log files</h2>
       <p class="lead">Job Hacker keeps one log file per day of what it did: imports (and what each row became), links read, AI calls, overnight runs and errors. If something looks wrong, download that day's file and send it along. Logs never include your API key, resumes or job descriptions.</p>
       <div id="logs"><p class="hint">Loading…</p></div>
-      <p class="hint">Job Hacker version ${s.version || "unknown"}.</p>
+
+      <h2>About</h2>
+      <p class="lead">Job Hacker version ${s.version || "unknown"}. Designed and built by Yazid. If you'd like an app like this made for you or your team, get in touch at <a href="https://thisisyazid.com" target="_blank" rel="noopener">thisisyazid.com</a>.</p>
 
       ${s.auth_required ? raw('<h2>Session</h2><div class="actions"><button class="btn" id="logout">Log out</button></div>') : ""}
     </div>`);
