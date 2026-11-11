@@ -11,6 +11,77 @@ const STAGES = [
 const STAGE = Object.fromEntries(STAGES.map((s) => [s.id, s]));
 const stageColor = (id) => `var(--st-${id})`;
 
+// ---------- possible duplicates (same job from another site) ----------
+// Same rules as app/dupes.py: same company (ignoring Pte Ltd, Inc, Singapore, brackets) and a near-identical title.
+const COMPANY_DROP = new Set(["pte", "ltd", "limited", "private", "inc", "incorporated", "llc", "plc", "co", "corp",
+  "corporation", "company", "group", "holdings", "singapore", "sg", "the"]);
+const TITLE_SYNONYMS = { sr: "senior", snr: "senior", jr: "junior", mgr: "manager", eng: "engineer", dev: "developer",
+  assoc: "associate", asst: "assistant", mgmt: "management", ops: "operations", pm: "product manager", ba: "business analyst" };
+const TITLE_DROP = new Set(["the", "a", "an", "of", "for", "and", "to", "in", "at", "with", "on"]);
+function normCompany(s) {
+  return (s || "").toLowerCase().replace(/\([^)]*\)/g, " ").replace(/&/g, " and ").split(/[^a-z0-9]+/)
+    .filter((w) => w && !COMPANY_DROP.has(w)).join(" ");
+}
+function titleTokens(s) {
+  const out = new Set();
+  for (const w of (s || "").toLowerCase().replace(/&/g, " and ").split(/[^a-z0-9]+/)) {
+    if (!w) continue;
+    for (const part of (TITLE_SYNONYMS[w] || w).split(" ")) if (!TITLE_DROP.has(part)) out.add(part);
+  }
+  return out;
+}
+function similarTitles(a, b) {
+  const ta = titleTokens(a), tb = titleTokens(b);
+  if (!ta.size || !tb.size) return false;
+  let both = 0;
+  ta.forEach((w) => { if (tb.has(w)) both++; });
+  return both / (ta.size + tb.size - both) >= 0.8;
+}
+// Map of job id -> the other jobs it looks like, among the given jobs.
+let dupeCache = { jobs: null, n: 0, map: new Map() };
+function dupeMap(jobs) {
+  if (dupeCache.jobs === jobs && dupeCache.n === jobs.length) return dupeCache.map;
+  const byCo = new Map();
+  for (const j of jobs) {
+    const k = normCompany(j.company);
+    if (k) (byCo.get(k) || byCo.set(k, []).get(k)).push(j);
+  }
+  const map = new Map();
+  for (const group of byCo.values()) {
+    for (let i = 0; i < group.length; i++) for (let k = i + 1; k < group.length; k++) {
+      if (similarTitles(group[i].title, group[k].title)) {
+        (map.get(group[i].id) || map.set(group[i].id, []).get(group[i].id)).push(group[k]);
+        (map.get(group[k].id) || map.set(group[k].id, []).get(group[k].id)).push(group[i]);
+      }
+    }
+  }
+  dupeCache = { jobs, n: jobs.length, map };
+  return map;
+}
+// Look-alikes among the active (not archived) jobs, worked out once per job list.
+let liveCache = { src: null, map: new Map() };
+function liveDupes() {
+  const live = (state.jobs || []).filter((x) => !x.archived_at);  // cheap; archiving changes it in place
+  if (liveCache.src !== state.jobs || liveCache.n !== live.length) liveCache = { src: state.jobs, n: live.length, map: dupeMap(live) };
+  return liveCache.map;
+}
+function linkHost(u) { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } }
+function dupeLabel(j) { return [j.title, j.company, linkHost(j.url) || "no link", j.archived_at ? "archived" : ""].filter(Boolean).join(" · "); }
+
+// On the add/review screen: point out jobs already saved with the same company and a near-identical title.
+async function warnIfSaved(draft) {
+  if (!normCompany(draft.company) || !draft.title) return;
+  try { if (!state.jobs) state.jobs = await api("/jobs"); } catch { return; }
+  const key = normCompany(draft.company);
+  const url = draft.url ? draft.url.split("#")[0] : "";
+  const hits = state.jobs.filter((j) => normCompany(j.company) === key && similarTitles(j.title, draft.title) && j.url !== url).slice(0, 3);
+  const box = document.getElementById("dup-warn");
+  if (!hits.length || !box) return;
+  box.innerHTML = html`<div class="callout warn"><p><strong>Looks like a job you already saved:</strong></p>
+    <ul>${hits.map((j) => raw(html`<li><a href="#/job/${j.id}">${j.title}</a> at ${j.company} <span class="hint" style="display:inline">(${STAGE[j.status]?.label || j.status}${j.url ? `, ${linkHost(j.url)}` : ""}${j.archived_at ? ", archived" : ""})</span></li>`))}</ul>
+    <p class="hint">You can still save this one, for example if it's a different team.</p></div>`;
+}
+
 // ---------- stacked sorting ----------
 const DEFAULT_SORTS = [{ key: "updated", dir: "desc" }];
 const DESC_FIRST = ["updated", "fit", "posted", "applied", "tonight", "resume"];
@@ -82,6 +153,7 @@ function jobPasses(j) {
   if (f.has("tonight") && !j.queued) return false;
   if (f.has("reposted") && !j.reposted_at) return false;
   if (f.has("nodesc") && (j.has_description || looksLikeUrl(j.title))) return false;
+  if (f.has("dupes") && !liveDupes().has(j.id)) return false;
   return true;
 }  // the job table's current rows (filtered and sorted), for "select all"
 const PAGE = 100;
@@ -502,6 +574,7 @@ async function renderList(keep = false) {
   const picked = live.filter((j) => j.queued).length;
   const reposted = live.filter((j) => j.reposted_at).length;
   const nodesc = live.filter((j) => !j.has_description && !looksLikeUrl(j.title)).length;
+  const ndupes = liveDupes().size;
   const y = scrollY;
   const focusQ = document.activeElement?.id === "q";
 
@@ -529,12 +602,14 @@ async function renderList(keep = false) {
           ${reposted || fOn("reposted") ? raw(html`<button class="stage stage-rp" data-filter="reposted" aria-pressed="${fOn("reposted")}" title="Jobs an import showed were posted again, in any stage"><span class="dot"></span>Reposted <span class="n">${reposted}</span></button>`) : ""}
           ${STAGES.map((s) => raw(html`<button class="stage" data-filter="${s.id}" aria-pressed="${fOn(s.id)}" style="--c:${raw(stageColor(s.id))}"><span class="dot"></span>${s.label} <span class="n">${counts[s.id]}</span></button>`))}
           ${nodesc || fOn("nodesc") ? raw(html`<button class="stage stage-nd" data-filter="nodesc" aria-pressed="${fOn("nodesc")}" title="Jobs without a description. Select them and use Fill in"><span class="dot"></span>No description <span class="n">${nodesc}</span></button>`) : ""}
+          ${ndupes || fOn("dupes") ? raw(html`<button class="stage stage-dup" data-filter="dupes" aria-pressed="${fOn("dupes")}" title="Same company and a near-identical title, saved more than once (for example from LinkedIn and Indeed)"><span class="dot"></span>Possible duplicates <span class="n">${ndupes}</span></button>`) : ""}
           ${archived || fOn("archived") ? raw(html`<button class="stage stage-ar" data-filter="archived" aria-pressed="${fOn("archived")}" title="Jobs you've archived, kept for searching later"><span class="dot"></span>Archived <span class="n">${archived}</span></button>`) : ""}
           <button class="stage" data-filter="all" aria-pressed="${fOn("all")}" title="Every job, archived ones included">All <span class="n">${jobs.length}</span></button>
         </div>
       </section>
       ${fOnly("closed") && counts.closed ? raw(html`<div class="archive-bar"><p>Done with these? Archive them to clear them out of the way. They stay searchable under <strong>Archived</strong>.</p>
         <button class="btn btn-s" id="ar-closed">Archive all ${counts.closed} closed job${counts.closed === 1 ? "" : "s"}</button></div>`) : ""}
+      ${fOn("dupes") && ndupes ? raw(html`<div class="archive-bar"><p>Jobs with the same company and a near-identical title, usually the same job saved from two sites. Hover the tag to see the match, then select the extra copies and archive or delete them.</p></div>`) : ""}
       ${fOn("nodesc") && nodesc ? raw(html`<div class="archive-bar"><p>Tick the jobs to fill in (or the box at the top of the table for all of them), then click <strong>Fill in</strong> in the bar at the bottom.</p></div>`) : ""}
       ${fOn("archived") && archived ? raw(html`<div class="archive-bar"><p>Archived jobs keep their stage and everything in them. Search them here, or open one to unarchive it.</p></div>`) : ""}
       <div class="tonight-bar" id="tonight-bar">
@@ -813,7 +888,8 @@ function drawRows() {
     stage: (a, b) => STAGE_ORDER[a.status] - STAGE_ORDER[b.status],
   };
   // Each level breaks the ties of the one before; the most recently changed comes first after that.
-  const levels = state.sorts.filter((x) => cmp[x.key]);
+  const levels = fOn("dupes") && sortsAreDefault()  // keep each set of look-alikes together
+    ? [{ key: "company", dir: "asc" }, { key: "title", dir: "asc" }] : state.sorts.filter((x) => cmp[x.key]);
   rows.sort((a, b) => {
     for (const { key, dir } of levels) {
       const d = dir === "asc" ? 1 : -1;
@@ -1121,6 +1197,7 @@ function rowHtml(j) {
           ? raw(html`<button type="button" class="flag warn flag-fill" data-fillrow="${j.id}" title="Read the description from the posting">No description · Fill in</button>`)
           : raw('<span class="flag warn" title="No link saved, so it can\'t be filled in automatically">No description</span>')}
         ${j.archived_at ? raw('<span class="flag ar">Archived</span>') : ""}
+        ${(() => { const m = !j.archived_at && liveDupes().get(j.id); return m ? raw(html`<span class="flag dup" title="${"Looks like: " + m.map(dupeLabel).join(" | ")}">Possible duplicate</span>`) : ""; })()}
         ${j.reposted_at ? raw(html`<span class="flag rp" title="${j.first_posted ? `First posted ${fmtPosted(j.first_posted, true)}` : "Posted again"}">Reposted</span>`) : ""}
         <span class="m-tags">${j.has_resume ? raw('<span class="flag ok">Resume</span>') : ""}${j.applied_at ? raw(html`<span class="m-applied">Applied ${fmtPosted(localDay(j.applied_at))}</span>`) : ""}</span>
       </td>
@@ -1441,7 +1518,8 @@ function formData(form) {
 
 function showReview(draft, note) {
   const body = document.getElementById("add-body");
-  body.innerHTML = (note ? html`<p class="method">${note}</p>` : "") + jobForm({ ...EMPTY, ...draft }, "Save job");
+  body.innerHTML = (note ? html`<p class="method">${note}</p>` : "") + '<div id="dup-warn"></div>' + jobForm({ ...EMPTY, ...draft }, "Save job");
+  warnIfSaved(draft);
   const form = document.getElementById("f-job");
   if (!draft.title) form.title.focus();
   form.addEventListener("submit", async (e) => {
@@ -1896,6 +1974,7 @@ function importSummary(r) {
   const parts = [`Imported ${added} job${added === 1 ? "" : "s"}`];
   if (r.duplicates) parts.push(`${r.duplicates} already saved`);
   if (r.reposted) parts.push(`${r.reposted} reposted (posted date updated)`);
+  if (r.possible_duplicates) parts.push(`${r.possible_duplicates} look like jobs you already have (see Possible duplicates)`);
   if (r.dead) parts.push(`${r.dead} taken down left out`);
   if (r.skipped) parts.push(`${r.skipped} without a title skipped`);
   return parts.join(", ") + ". Each row is listed in today's log (Settings → Log files).";
