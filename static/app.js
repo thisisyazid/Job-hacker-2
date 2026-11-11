@@ -11,12 +11,42 @@ const STAGES = [
 const STAGE = Object.fromEntries(STAGES.map((s) => [s.id, s]));
 const stageColor = (id) => `var(--st-${id})`;
 
+// ---------- stacked sorting ----------
+const DEFAULT_SORTS = [{ key: "updated", dir: "desc" }];
+const DESC_FIRST = ["updated", "fit", "posted", "applied", "tonight", "resume"];
+const SORT_LABELS = { stage: "Stage", title: "Job", company: "Company", ref: "Referred by", fit: "Fit", resume: "Resume",
+  tonight: "Tonight", posted: "Posted", applied: "Applied", updated: "Updated" };
+function loadSorts() {
+  try {
+    const v = JSON.parse(localStorage.getItem("jh.sorts") || "null");
+    if (Array.isArray(v) && v.length && v.every((x) => x && SORT_LABELS[x.key] && ["asc", "desc"].includes(x.dir))) return v;
+    const k = localStorage.getItem("jh.sort");  // the older single sort
+    if (k && SORT_LABELS[k]) return [{ key: k, dir: localStorage.getItem("jh.dir") === "asc" ? "asc" : "desc" }];
+  } catch { /* storage blocked */ }
+  return DEFAULT_SORTS.map((x) => ({ ...x }));
+}
+function sortsAreDefault() { return JSON.stringify(state.sorts) === JSON.stringify(DEFAULT_SORTS); }
+function saveSorts() { localSet("jh.sorts", JSON.stringify(state.sorts)); }
+// Click a heading: add it as the next level (the default is replaced), click again to flip it,
+// a third time to remove it.
+function clickSort(key) {
+  const i = state.sorts.findIndex((x) => x.key === key);
+  const first = DESC_FIRST.includes(key) ? "desc" : "asc";
+  if (i < 0) state.sorts = sortsAreDefault() ? [{ key, dir: first }] : [...state.sorts, { key, dir: first }];
+  else if (state.sorts[i].dir === first) state.sorts[i].dir = first === "asc" ? "desc" : "asc";
+  else state.sorts.splice(i, 1);
+  if (!state.sorts.length) state.sorts = DEFAULT_SORTS.map((x) => ({ ...x }));
+  saveSorts();
+}
+function sortSummary() {
+  return state.sorts.map((x, i) => `${i ? "then " : ""}${SORT_LABELS[x.key]} ${x.dir === "asc" ? "↑" : "↓"}`).join(", ");
+}
+
 const state = {
   session: null,
   jobs: null,
   filter: localGet("jh.filter") || "active",
-  sort: localGet("jh.sort") || "updated",
-  dir: localGet("jh.dir") || "desc",
+  sorts: loadSorts(),  // stacked sort levels: [{key, dir}], first one wins
   q: "",
   shown: 0,  // how many rows of the job table are drawn; more are added as you scroll
   selected: new Set(),  // job ids ticked in the select column, for bulk actions
@@ -57,6 +87,7 @@ function jobPasses(j) {
 const PAGE = 100;
 
 const $main = document.getElementById("main");
+
 
 // ---------- utilities ----------
 
@@ -530,6 +561,9 @@ async function renderList(keep = false) {
           <button class="btn btn-ghost btn-s" id="sel-clear">Clear</button>
         </div>
       </div>
+      <div class="sort-bar"><span>Sorted by <strong>${sortSummary()}</strong></span>
+        ${sortsAreDefault() ? raw('<span class="hint">Click column headings to sort; click more to sort within ties.</span>')
+          : raw('<button class="btn btn-ghost btn-s" id="sort-reset" type="button">Reset sort</button>')}</div>
       <div class="sheet-tools">
   <p class="hint sel-hint">Click a row to select it, <span class="kbd">Ctrl</span>+click to add more, <span class="kbd">Shift</span>+click for a range, then right-click for actions. Click a title, or double-click a row, to open the job. Tap several filters above to combine them; tap one again to switch it off.</p>
         <div class="export-tools" role="group" aria-label="Export"><span id="exp-n">Export</span>
@@ -543,7 +577,11 @@ async function renderList(keep = false) {
             ${SHEET_COLS.map((c) => raw(c.cls === "c-sel"
               ? html`<th class="c-sel"><input type="checkbox" id="sel-all" aria-label="Select every job shown" title="Select every job shown"></th>`
               : c.sort
-              ? html`<th class="${c.cls}" aria-sort="${state.sort === c.sort ? (state.dir === "asc" ? "ascending" : "descending") : "none"}"><button data-sort="${c.sort}">${c.label}<span class="arr" aria-hidden="true">${state.sort === c.sort ? (state.dir === "asc" ? "↑" : "↓") : ""}</span></button></th>`
+              ? (() => {
+                  const lvl = state.sorts.findIndex((x) => x.key === c.sort);
+                  const sd = lvl >= 0 ? state.sorts[lvl].dir : "";
+                  return html`<th class="${c.cls}" aria-sort="${lvl === 0 ? (sd === "asc" ? "ascending" : "descending") : "none"}"><button data-sort="${c.sort}" title="${lvl >= 0 ? `Sort level ${lvl + 1}. Click to ${sd === (DESC_FIRST.includes(c.sort) ? "desc" : "asc") ? "reverse" : "remove"} it` : "Click to sort by this column (adds to the current sort)"}">${c.label}<span class="arr" aria-hidden="true">${lvl >= 0 ? `${sd === "asc" ? "↑" : "↓"}${state.sorts.length > 1 ? lvl + 1 : ""}` : ""}</span></button></th>`;
+                })()
               : html`<th class="${c.cls}">${c.label}</th>`))}
           </tr></thead>
           <tbody id="jobs"></tbody>
@@ -579,13 +617,14 @@ async function renderList(keep = false) {
   });
   if (focusQ) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); }
   $main.querySelectorAll("[data-sort]").forEach((b) => b.addEventListener("click", () => {
-    const k = b.dataset.sort;
-    if (state.sort === k) state.dir = state.dir === "asc" ? "desc" : "asc";
-    else { state.sort = k; state.dir = ["updated", "fit", "posted", "applied", "tonight"].includes(k) ? "desc" : "asc"; }
-    localSet("jh.sort", state.sort); localSet("jh.dir", state.dir);
+    clickSort(b.dataset.sort);
     state.shown = 0;
     renderList(true);
   }));
+  document.getElementById("sort-reset")?.addEventListener("click", () => {
+    state.sorts = DEFAULT_SORTS.map((x) => ({ ...x }));
+    saveSorts(); state.shown = 0; renderList(true);
+  });
   const tbody = document.getElementById("jobs");
   tbody.addEventListener("click", (e) => {
     const ref = e.target.closest("button.ref-edit");
@@ -758,7 +797,6 @@ function drawRows() {
     if (needle && !`${j.title} ${j.company} ${j.location} ${j.tags} ${j.referred_by || ""}`.toLowerCase().includes(needle)) return false;
     return true;
   });
-  const dir = state.dir === "asc" ? 1 : -1;
   const txt = (a, b) => (a || "").localeCompare(b || "", undefined, { sensitivity: "base" });
   const cmp = {
     updated: (a, b) => (a.updated_at || "").localeCompare(b.updated_at || ""),
@@ -767,14 +805,23 @@ function drawRows() {
     posted: (a, b) => (isoDate(a.posted_date) || "0").localeCompare(isoDate(b.posted_date) || "0"),
     // not applied yet sorts as oldest, so the latest applications come first
     applied: (a, b) => (a.applied_at || "0").localeCompare(b.applied_at || "0"),
-    company: (a, b) => txt(a.company, b.company) || txt(a.title, b.title),
-    ref: (a, b) => (!a.referred_by - !b.referred_by) * dir || txt(a.referred_by, b.referred_by),  // named first either way
+    company: (a, b) => txt(a.company, b.company),
+    ref: (a, b, d) => (!a.referred_by - !b.referred_by) * d || txt(a.referred_by, b.referred_by),  // named first either way
     title: (a, b) => txt(a.title, b.title),
-    resume: (a, b) => (a.has_resume - b.has_resume) || (b.updated_at || "").localeCompare(a.updated_at || ""),
-    tonight: (a, b) => (a.queued - b.queued) || (a.has_description - b.has_description) || (b.updated_at || "").localeCompare(a.updated_at || ""),
-    stage: (a, b) => STAGE_ORDER[a.status] - STAGE_ORDER[b.status] || (b.updated_at || "").localeCompare(a.updated_at || ""),
-  }[state.sort] || ((a, b) => (a.updated_at || "").localeCompare(b.updated_at || ""));
-  rows.sort((a, b) => dir * cmp(a, b));
+    resume: (a, b) => a.has_resume - b.has_resume,
+    tonight: (a, b) => (a.queued - b.queued) || (a.has_description - b.has_description),
+    stage: (a, b) => STAGE_ORDER[a.status] - STAGE_ORDER[b.status],
+  };
+  // Each level breaks the ties of the one before; the most recently changed comes first after that.
+  const levels = state.sorts.filter((x) => cmp[x.key]);
+  rows.sort((a, b) => {
+    for (const { key, dir } of levels) {
+      const d = dir === "asc" ? 1 : -1;
+      const r = cmp[key](a, b, d) * d;
+      if (r) return r;
+    }
+    return (b.updated_at || "").localeCompare(a.updated_at || "");
+  });
   lastRows = rows;
   const expN = document.getElementById("exp-n");
   if (expN) expN.textContent = `Export the ${rows.length} job${rows.length === 1 ? "" : "s"} shown:`;
