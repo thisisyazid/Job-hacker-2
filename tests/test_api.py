@@ -578,3 +578,25 @@ def test_referred_by(c):
     backup = json.loads(c.get("/api/export").content)
     assert next(y for p in backup["profiles"] for y in p["jobs"] if y["title"] == "Ref role")["referred_by"] == "Sarah Tan"
     assert c.patch(f"/api/jobs/{j['id']}", json={"referred_by": "x" * 201}).status_code == 422
+
+
+def test_claude_gets_room_and_cut_off_answers_are_errors(monkeypatch):
+    from types import SimpleNamespace
+    from app import ai
+    seen = {}
+
+    def client(stop):
+        def create(**kw):
+            seen.update(kw)
+            return SimpleNamespace(stop_reason=stop, content=[SimpleNamespace(type="thinking", thinking=""),
+                                                               SimpleNamespace(type="text", text="Dear team,")])
+        return SimpleNamespace(messages=SimpleNamespace(create=create))
+
+    monkeypatch.setattr(ai, "_get_client", lambda: client("end_turn"))
+    assert ai._ask_claude("s", "u", 1500) == "Dear team," and seen["max_tokens"] >= 16000
+    monkeypatch.setattr(ai, "_get_client", lambda: client("max_tokens"))
+    with pytest.raises(ai.AIError, match="cut off"):
+        ai._ask_claude("s", "u", 1500)
+    monkeypatch.setattr(ai, "_get_client", lambda: client("refusal"))
+    with pytest.raises(ai.AIError, match="declined"):
+        ai._ask_claude("s", "u", 1500)
