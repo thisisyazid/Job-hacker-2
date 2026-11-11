@@ -401,7 +401,7 @@ def extract_url(body: UrlIn, user: User = Depends(current_user), db: Session = D
         log.info("read link %s: already saved as job %s (%s, %s)", url, dupe.id, logs.short(dupe.title), dupe.status)
         return {"existing_id": dupe.id, "title": dupe.title, "company": dupe.company}
     try:
-        draft, method = fetch_job(body.url, engine=_engine_or_none(body.engine))
+        draft, method = fetch_job(body.url, engine=_engine_or_none(body.engine), allow_ai=body.engine != "none")
     except ScrapeError as e:
         log.info("read link %s: failed: %s", body.url, e)
         return JSONResponse({"needs_manual": True, "reason": str(e), "url": url}, status_code=422)
@@ -417,7 +417,9 @@ def extract_text(body: TextIn):
     if len(text) < 40:
         raise HTTPException(400, "Paste the whole job post, including the description.")
     url = normalize_url(body.url or "")
-    if ai.enabled():
+    if body.engine == "none":
+        fallback_reason = "AI wasn't used, so only the description was filled in."
+    elif ai.enabled():
         try:
             eng = ai.resolve(body.engine)
             d = ai.extract_job(text[:30000], engine=eng)
@@ -504,7 +506,7 @@ def job_from_url(body: UrlIn, user: User = Depends(current_user), db: Session = 
         log.info("bulk link %s: already saved as job %s (%s, %s)", url, dupe.id, logs.short(dupe.title), dupe.status)
         return {"status": "duplicate", "url": url, "job": job_out(dupe, full=False)}
     try:
-        draft, method = fetch_job(body.url, engine=_engine_or_none(body.engine))
+        draft, method = fetch_job(body.url, engine=_engine_or_none(body.engine), allow_ai=body.engine != "none")
     except ScrapeError as e:
         log.info("bulk link %s: failed: %s", body.url, e)
         return {"status": "failed", "reason": str(e), "url": url}
