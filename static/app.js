@@ -125,6 +125,7 @@ const state = {
   filter: localGet("jh.filter") || "active",
   sorts: loadSorts(),  // stacked sort levels: [{key, dir}], first one wins
   q: "",
+  dates: { field: localGet("jh.dateField") || "posted", from: "", to: "" },  // date range filter on the job list
   shown: 0,  // how many rows of the job table are drawn; more are added as you scroll
   selected: new Set(),  // job ids ticked in the select column, for bulk actions
 };
@@ -645,6 +646,7 @@ async function renderList(keep = false) {
           <button class="btn btn-ghost btn-s" id="sel-clear">Clear</button>
         </div>
       </div>
+      ${raw(dateBar())}
       <div class="sort-bar"><span>Sorted by <strong>${sortSummary()}</strong></span>
         ${sortsAreDefault() ? raw('<span class="hint">Click column headings to sort; click more to sort within ties.</span>')
           : raw('<button class="btn btn-ghost btn-s" id="sort-reset" type="button">Reset sort</button>')}</div>
@@ -693,6 +695,7 @@ async function renderList(keep = false) {
     state.shown = 0;
     renderList(true);
   }));
+  wireDateBar();
   const q = document.getElementById("q");
   let qTimer;
   q.addEventListener("input", () => {
@@ -713,6 +716,16 @@ async function renderList(keep = false) {
   tbody.addEventListener("click", (e) => {
     const ref = e.target.closest("button.ref-edit");
     if (ref) { editReferrer(ref); return; }
+    const tick = e.target.closest("td.c-sel")?.querySelector("input[data-sel]");
+    if (tick && e.shiftKey && selAnchor != null) {
+      // Shift+click a tick box: tick everything from the last ticked row to this one
+      e.preventDefault();
+      const ids = lastRows.map((j) => j.id), a = ids.indexOf(selAnchor), b = ids.indexOf(Number(tick.dataset.sel));
+      if (a >= 0 && b >= 0) ids.slice(Math.min(a, b), Math.max(a, b) + 1).forEach((x) => state.selected.add(x));
+      selAnchor = Number(tick.dataset.sel);
+      setTimeout(syncSel);  // after the browser undoes its own toggle of the box
+      return;
+    }
     const sel = e.target.closest("td.c-sel");
     if (sel) { if (e.target.tagName !== "INPUT") sel.querySelector("input")?.click(); return; }
     const tn = e.target.closest("td.c-tn");
@@ -874,10 +887,62 @@ const SHEET_COLS = [
 ];
 const STAGE_ORDER = Object.fromEntries(STAGES.map((s, i) => [s.id, i]));
 
+// ---------- date range filter ----------
+const DATE_FIELDS = [
+  { id: "posted", label: "Posted", of: (j) => isoDate(j.posted_date) },
+  { id: "saved", label: "Saved", of: (j) => localDay(j.created_at) },
+  { id: "applied", label: "Applied", of: (j) => (j.applied_at ? localDay(j.applied_at) : "") },
+  { id: "updated", label: "Updated", of: (j) => (j.updated_at ? localDay(j.updated_at) : "") },
+];
+const dateOf = (j) => (DATE_FIELDS.find((f) => f.id === state.dates.field) || DATE_FIELDS[0]).of(j);
+const datesOn = () => !!(state.dates.from || state.dates.to);
+function datePasses(j) {
+  if (!datesOn()) return true;
+  const d = dateOf(j);
+  return !!d && (!state.dates.from || d >= state.dates.from) && (!state.dates.to || d <= state.dates.to);
+}
+// Months that have jobs for the chosen date, newest first, with how many.
+function monthOptions() {
+  const m = new Map();
+  for (const j of state.jobs || []) { const d = dateOf(j); if (d) m.set(d.slice(0, 7), (m.get(d.slice(0, 7)) || 0) + 1); }
+  return [...m.entries()].sort((a, b) => b[0].localeCompare(a[0])).map(([k, n]) => ({
+    k, n, label: new Date(k + "-01T00:00:00").toLocaleDateString(undefined, { month: "long", year: "numeric" }) }));
+}
+function monthBounds(k) {
+  const [y, mo] = k.split("-").map(Number);
+  const last = new Date(y, mo, 0).getDate();
+  return { from: `${k}-01`, to: `${k}-${String(last).padStart(2, "0")}` };
+}
+function dateBar() {
+  const d = state.dates, months = monthOptions();
+  const picked = months.find((m) => { const b = monthBounds(m.k); return b.from === d.from && b.to === d.to; });
+  return html`<div class="date-bar" role="group" aria-label="Filter by date">
+    <label for="df-field">Dates</label>
+    <select id="df-field" aria-label="Which date">${DATE_FIELDS.map((f) => raw(html`<option value="${f.id}" ${f.id === d.field ? "selected" : ""}>${f.label}</option>`))}</select>
+    <select id="df-month" aria-label="Pick a month"><option value="">Any month</option>${months.map((m) => raw(html`<option value="${m.k}" ${picked?.k === m.k ? "selected" : ""}>${m.label} (${m.n})</option>`))}</select>
+    <span class="df-range"><label for="df-from">from</label><input type="date" id="df-from" value="${d.from}" max="${d.to || ""}">
+    <label for="df-to">to</label><input type="date" id="df-to" value="${d.to}" min="${d.from || ""}"></span>
+    ${datesOn() ? raw('<button class="btn btn-ghost btn-s" id="df-clear" type="button">Clear dates</button>') : ""}
+  </div>`;
+}
+function wireDateBar() {
+  const bar = document.querySelector(".date-bar");
+  if (!bar) return;
+  const redraw = () => { state.shown = 0; bar.outerHTML = dateBar(); wireDateBar(); drawRows(); };
+  bar.querySelector("#df-field").addEventListener("change", (e) => { state.dates.field = e.target.value; localSet("jh.dateField", e.target.value); redraw(); });
+  bar.querySelector("#df-month").addEventListener("change", (e) => {
+    Object.assign(state.dates, e.target.value ? monthBounds(e.target.value) : { from: "", to: "" }); redraw();
+  });
+  bar.querySelector("#df-from").addEventListener("change", (e) => { state.dates.from = e.target.value; redraw(); });
+  bar.querySelector("#df-to").addEventListener("change", (e) => { state.dates.to = e.target.value; redraw(); });
+  bar.querySelector("#df-clear")?.addEventListener("click", () => { state.dates.from = state.dates.to = ""; redraw(); });
+}
+
 function drawRows() {
   const needle = state.q.trim().toLowerCase();
   let rows = state.jobs.filter((j) => {
     if (!jobPasses(j)) return false;
+    if (!datePasses(j)) return false;
     if (needle && !`${j.title} ${j.company} ${j.location} ${j.tags} ${j.referred_by || ""}`.toLowerCase().includes(needle)) return false;
     return true;
   });
