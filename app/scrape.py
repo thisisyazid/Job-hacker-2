@@ -73,6 +73,27 @@ def normalize_url(url: str) -> str:
     return urlunparse((p.scheme.lower(), p.netloc.lower(), p.path or "/", "", query, ""))
 
 
+def link_key(url: str) -> str:
+    """Looser key for "is this the same posting": ignores http/https, www., a trailing
+    slash and letter case in the address; LinkedIn by job ID, Indeed by its jk job key
+    (the same Indeed job shows up under /viewjob, /rc/clk, /m/viewjob and country sites)."""
+    u = normalize_url(url)
+    if not u:
+        return ""
+    li = linkedin_job_id(u)
+    if li:
+        return f"linkedin:{li}"
+    p = urlparse(u)
+    host = p.netloc.lower().removeprefix("www.")
+    qs = parse_qs(p.query)
+    if "indeed." in host:
+        jk = (qs.get("jk") or qs.get("vjk") or [""])[0]
+        if jk:
+            return f"indeed:{jk.lower()}"
+    path = p.path.rstrip("/") or "/"
+    return f"{host}{path}" + (f"?{p.query}" if p.query else "")
+
+
 def html_to_text(fragment: str) -> str:
     if not fragment:
         return ""

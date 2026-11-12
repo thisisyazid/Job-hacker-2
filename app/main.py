@@ -22,7 +22,7 @@ from .db import STATUSES, Document, Job, NightlyRun, Persona, User, get_db, init
 from . import dupes
 from .docx_export import to_docx
 from .pdf_export import to_pdf
-from .scrape import ScrapeError, fetch_job, looks_like_url, normalize_url
+from .scrape import ScrapeError, fetch_job, link_key, looks_like_url, normalize_url
 
 logs.setup()
 log = logs.log
@@ -79,12 +79,29 @@ def own_job(job_id: int, user: User, db: Session) -> Job:
 
 
 def find_dupe(db: Session, user: User, url: str, exclude_id: int | None = None) -> Job | None:
+    """The saved job (archived ones included) with this link, or a link to the same posting
+    written differently (http/https, www., trailing slash, another Indeed address)."""
     if not url:
         return None
     q = db.query(Job).filter(Job.user_id == user.id, Job.url == url)
     if exclude_id:
         q = q.filter(Job.id != exclude_id)
-    return q.first()
+    hit = q.first()
+    if hit:
+        return hit
+    key = link_key(url)
+    for jid, ju in db.query(Job.id, Job.url).filter(Job.user_id == user.id, Job.url.isnot(None)):
+        if jid != exclude_id and link_key(ju) == key:
+            return db.get(Job, jid)
+    return None
+
+
+def link_index(db: Session, user: User) -> dict[str, int]:
+    """link_key -> job id for every saved job with a link, archived ones included."""
+    out: dict[str, int] = {}
+    for jid, ju in db.query(Job.id, Job.url).filter(Job.user_id == user.id, Job.url.isnot(None)).order_by(Job.id):
+        out.setdefault(link_key(ju), jid)
+    return out
 
 
 def default_persona(db: Session, user: User, persona_id: int | None = None) -> Persona | None:
@@ -993,12 +1010,14 @@ async def import_csv(file: UploadFile = File(...), user: User = Depends(current_
         if u and is_iso(d) and d > newest.get(u, ""):
             newest[u] = d
 
+    # every saved link (archived jobs included), so a job already saved or archived isn't added again
+    links = link_index(db, user)
     # existing jobs by company, to spot the same job saved from another site (different link)
-    by_company: dict[str, list[tuple[int, str]]] = {}
-    for jid, jt, jc in db.query(Job.id, Job.title, Job.company).filter(Job.user_id == user.id):
+    by_company: dict[str, list[tuple[int, str, bool]]] = {}
+    for jid, jt, jc, ja in db.query(Job.id, Job.title, Job.company, Job.archived_at).filter(Job.user_id == user.id):
         if dupes.norm_company(jc):
-            by_company.setdefault(dupes.norm_company(jc), []).append((jid, jt))
-    added = n_dupes = invalid = dead = redated = possible = 0
+            by_company.setdefault(dupes.norm_company(jc), []).append((jid, jt, ja is not None))
+    added = n_dupes = invalid = dead = redated = possible = possible_archived = 0
     to_fill: list[int] = []  # new jobs with a link but no description, to read from their postings next
     redated_ids: set[int] = set()
     for n, row in enumerate(rows, start=2):  # line 1 is the header
@@ -1017,11 +1036,12 @@ async def import_csv(file: UploadFile = File(...), user: User = Depends(current_
             dead += 1
             log.info("  %s -> left out, title is a link (posting taken down)", what)
             continue
-        dupe = find_dupe(db, user, url)
+        dupe = db.get(Job, links[link_key(url)]) if url and link_key(url) in links else None
         if dupe:
             n_dupes += 1
             latest = newest.get(url, "")
             old = dupe.posted_date or ""
+            where = f"job {dupe.id}" + (" (archived)" if dupe.archived_at else "")
             if latest and (not is_iso(old) or latest > old) and dupe.id not in redated_ids:
                 dupe.posted_date = latest
                 if old and not dupe.first_posted:
@@ -1029,10 +1049,10 @@ async def import_csv(file: UploadFile = File(...), user: User = Depends(current_
                 dupe.reposted_at = now()
                 redated_ids.add(dupe.id)
                 redated += 1
-                log.info("  %s -> already saved as job %s (%r, stage %s); reposted, posted date %s -> %s", what,
-                         dupe.id, logs.short(dupe.title, 60), dupe.status, old or "(none)", latest)
+                log.info("  %s -> already saved as %s (%r, stage %s); reposted, posted date %s -> %s", what,
+                         where, logs.short(dupe.title, 60), dupe.status, old or "(none)", latest)
             else:
-                log.info("  %s -> already saved as job %s (%r, stage %s, posted %s)", what, dupe.id,
+                log.info("  %s -> already saved as %s (%r, stage %s, posted %s)", what, where,
                          logs.short(dupe.title, 60), dupe.status, old or "(none)")
             continue
         job = Job(user_id=user.id, url=url or None, title=title,
@@ -1044,22 +1064,27 @@ async def import_csv(file: UploadFile = File(...), user: User = Depends(current_
         db.add(job)
         db.flush()
         added += 1
+        if job.url:
+            links.setdefault(link_key(job.url), job.id)
         if job.url and not (job.description or "").strip():
             to_fill.append(job.id)
         log.info("  %s -> added as job %s (stage %s)", what, job.id, job.status)
         key = dupes.norm_company(job.company)
-        twin = next((jid for jid, jt in by_company.get(key, []) if dupes.similar_titles(jt, job.title)), None) if key else None
-        if twin:
+        twins = [(jid, ja) for jid, jt, ja in by_company.get(key, []) if dupes.similar_titles(jt, job.title)] if key else []
+        if twins:
             possible += 1
-            log.info("     job %s looks like job %s (same company and title, different link)", job.id, twin)
+            if all(ja for _, ja in twins):
+                possible_archived += 1
+            log.info("     job %s looks like %s (same company and title, different link)", job.id,
+                     ", ".join(f"job {jid}" + (" (archived)" if ja else "") for jid, ja in twins))
         if key:
-            by_company.setdefault(key, []).append((job.id, job.title))
+            by_company.setdefault(key, []).append((job.id, job.title, False))
     db.commit()
     log.info("CSV import done: %d rows, %d added, %d already saved (%d of them reposted, date updated), "
-             "%d without a title, %d taken down, %d look like jobs already saved from another site",
-             len(rows), added, n_dupes, redated, invalid, dead, possible)
+             "%d without a title, %d taken down, %d look like jobs already saved from another site (%d of those archived)",
+             len(rows), added, n_dupes, redated, invalid, dead, possible, possible_archived)
     return {"rows": len(rows), "added": added, "duplicates": n_dupes, "reposted": redated, "skipped": invalid, "dead": dead,
-            "possible_duplicates": possible,
+            "possible_duplicates": possible, "possible_archived": possible_archived,
             "to_fill": to_fill}
 
 
