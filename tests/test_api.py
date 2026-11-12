@@ -137,7 +137,7 @@ def test_csv_import(c):
                 "https://www.linkedin.com/jobs/view/2222222222,Agile Coach,Globex,Remote,2026-04-15,In progress\n"
                 ",,,,,\n")
     r = c.post("/api/import/csv", files={"file": ("jobs.csv", csv_text, "text/csv")}).json()
-    assert {k: v for k, v in r.items() if k not in ("to_fill", "possible_duplicates")} == {"rows": 4, "added": 2, "duplicates": 1, "reposted": 0, "skipped": 1, "dead": 0}
+    assert {k: v for k, v in r.items() if k not in ("to_fill", "possible_duplicates", "possible_archived")} == {"rows": 4, "added": 2, "duplicates": 1, "reposted": 0, "skipped": 1, "dead": 0}
     assert len(r["to_fill"]) == 2  # both new jobs have a link and no description
     statuses = {j["title"]: j["status"] for j in c.get("/api/jobs").json()}
     assert statuses["Agile Coach"] == "applied" and statuses["Scrum Master"] == "saved"
@@ -696,3 +696,28 @@ def test_possible_duplicates_from_other_sites(c):
                 "Product Designer,Acme,https://sg.indeed.com/viewjob?jk=def456\n")
     r = c.post("/api/import/csv", files={"file": ("dup.csv", csv_text, "text/csv")}).json()
     assert r["added"] == 2 and r["possible_duplicates"] == 1
+
+
+def test_link_key_matches_the_same_posting():
+    from app.scrape import link_key
+    assert link_key("http://www.example.com/jobs/42/") == link_key("https://example.com/jobs/42")
+    assert link_key("https://sg.indeed.com/viewjob?jk=ABC123&from=serp") == link_key("https://www.indeed.com/rc/clk?jk=abc123")
+    assert link_key("https://www.linkedin.com/jobs/view/senior-pm-at-acme-4489024515?trk=x") == "linkedin:4489024515"
+    assert link_key("https://example.com/jobs/42") != link_key("https://example.com/jobs/43")
+
+
+def test_import_skips_archived_jobs_and_flags_reposts_of_them(c):
+    a = c.post("/api/jobs", json={"title": "Business Analyst", "company": "Accenture Southeast Asia",
+                                  "url": "https://www.linkedin.com/jobs/view/4400000001/"}).json()
+    b = c.post("/api/jobs", json={"title": "Data Engineer", "company": "Grab", "url": "http://www.grab.careers/jobs/77/"}).json()
+    c.post("/api/jobs/archive", json={"job_ids": [a["id"], b["id"]], "archived": True})
+    csv_text = ("Job title,Company Name,Job URL\n"
+                "Business Analyst,Accenture Southeast Asia,https://www.linkedin.com/jobs/view/business-analyst-4400000001\n"
+                "Data Engineer,Grab,https://grab.careers/jobs/77\n"  # same page, written differently
+                "Business Analyst,Accenture Southeast Asia Pte Ltd,https://www.linkedin.com/jobs/view/4400000002/\n")  # reposted, new ID
+    r = c.post("/api/import/csv", files={"file": ("a.csv", csv_text, "text/csv")}).json()
+    assert r["duplicates"] == 2 and r["added"] == 1
+    assert r["possible_duplicates"] == 1 and r["possible_archived"] == 1
+    # adding by hand finds the archived job too
+    again = c.post("/api/jobs", json={"title": "Data Engineer", "company": "Grab", "url": "https://grab.careers/jobs/77/"})
+    assert again.status_code == 200 and again.json()["id"] == b["id"]

@@ -58,11 +58,17 @@ function dupeMap(jobs) {
   dupeCache = { jobs, n: jobs.length, map };
   return map;
 }
-// Look-alikes among the active (not archived) jobs, worked out once per job list.
+// Active jobs that look like another job, active or archived (so a new copy of a job you
+// archived is flagged too). Worked out once per job list.
 let liveCache = { src: null, map: new Map() };
 function liveDupes() {
-  const live = (state.jobs || []).filter((x) => !x.archived_at);  // cheap; archiving changes it in place
-  if (liveCache.src !== state.jobs || liveCache.n !== live.length) liveCache = { src: state.jobs, n: live.length, map: dupeMap(live) };
+  const jobs = state.jobs || [];
+  const nLive = jobs.filter((x) => !x.archived_at).length;  // cheap; archiving changes it in place
+  if (liveCache.src !== jobs || liveCache.n !== nLive) {
+    const all = dupeMap(jobs), map = new Map();
+    for (const j of jobs) if (!j.archived_at && all.has(j.id)) map.set(j.id, all.get(j.id));
+    liveCache = { src: jobs, n: nLive, map };
+  }
   return liveCache.map;
 }
 function linkHost(u) { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return ""; } }
@@ -1979,7 +1985,7 @@ function importSummary(r) {
   const parts = [`Imported ${added} job${added === 1 ? "" : "s"}`];
   if (r.duplicates) parts.push(`${r.duplicates} already saved`);
   if (r.reposted) parts.push(`${r.reposted} reposted (posted date updated)`);
-  if (r.possible_duplicates) parts.push(`${r.possible_duplicates} look like jobs you already have (see Possible duplicates)`);
+  if (r.possible_duplicates) parts.push(`${r.possible_duplicates} look like jobs you already have${r.possible_archived ? ` (${r.possible_archived} like ones you archived)` : ""} (see Possible duplicates)`);
   if (r.dead) parts.push(`${r.dead} taken down left out`);
   if (r.skipped) parts.push(`${r.skipped} without a title skipped`);
   return parts.join(", ") + ". Each row is listed in today's log (Settings → Log files).";
