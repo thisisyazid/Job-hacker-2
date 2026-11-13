@@ -1612,6 +1612,7 @@ function showReview(draft, note) {
 
 async function renderJob(id) {
   const j = await api(`/jobs/${id}`);
+  docJob = j;
   const personas = state.session.ai_enabled ? await api("/personas") : [];
   const facts = [["Referred by", j.referred_by], ["Location", j.location], ["Salary", j.salary], ["Job type", j.employment_type], ["Posted", fmtPosted(j.posted_date, true) + (j.reposted_at ? (j.first_posted ? ` (reposted; first posted ${fmtPosted(j.first_posted, true)})` : " (reposted)") : "")], ["Saved", longDate(j.created_at)]].filter(([, v]) => v);
   const desc = j.description || "";
@@ -1840,12 +1841,40 @@ function toPlain(md) {
   }).join("\n").replace(/\*\*(.+?)\*\*/g, "$1").replace(/\n{3,}/g, "\n\n").trim();
 }
 
+// ---------- keyword match report for tailored resumes ----------
+// Which of the posting's keywords (from the fit check) a resume contains, like an ATS scan.
+let docJob = null;
+const kwNorm = (s) => ` ${(s || "").toLowerCase().replace(/[^a-z0-9+#]+/g, " ").trim()} `;
+function kwFound(kw, text) {
+  // "Certified ScrumMaster (CSM)" or "Jira/Confluence": any of the parts counts
+  const parts = [kw.replace(/\([^)]*\)/g, " "), ...(kw.match(/\(([^)]+)\)/g) || []).map((x) => x.slice(1, -1)), ...kw.split(/\s*\/\s*/)];
+  return parts.some((p) => {
+    const n = kwNorm(p).trim();
+    if (!n) return false;
+    const forms = [n, n.replace(/s$/, ""), n + "s", n.replace(/ies$/, "y"), n.replace(/y$/, "ies")];
+    return forms.some((v) => v.length > 1 && text.includes(` ${v} `));
+  });
+}
+function kwReport(content) {
+  const kws = docJob?.fit?.keywords || [];
+  if (!kws.length) return html`<p class="hint kw-none">Run a fit check on this job to see which of the posting's keywords this resume covers.</p>`;
+  const text = kwNorm(content);
+  const hits = kws.map((k) => ({ k, hit: kwFound(k, text) }));
+  const n = hits.filter((x) => x.hit).length, pctv = Math.round((n / kws.length) * 100);
+  return html`<div class="kw-report">
+    <p><strong>Keyword match: ${n} of ${kws.length} (${pctv}%)</strong> <span class="hint" style="display:inline">of the posting's keywords from the fit check appear in this resume.</span></p>
+    <ul class="kw-chips">${hits.map((x) => raw(html`<li class="kwm ${x.hit ? "hit" : "miss"}"><span aria-hidden="true">${x.hit ? "✓" : "–"}</span> ${x.k}<span class="sr">${x.hit ? " (found)" : " (missing)"}</span></li>`))}</ul>
+    ${n < kws.length ? raw('<p class="hint">Missing ones are left out because your base resume doesn\'t show them. If you do have that experience, add it to your resume in Settings and tailor again.</p>') : ""}
+  </div>`;
+}
+
 function drawDocs(docs, openId) {
   const box = document.getElementById("docs");
   box.innerHTML = docs.map((d) => html`
     <details class="doc" data-doc="${d.id}" ${d.id === openId ? "open" : ""}>
       <summary><span><span class="t">${d.kind === "resume" ? "Tailored resume" : "Cover letter"}</span><br><span class="m">${longDate(d.created_at)}${d.persona_name ? `, from ${d.persona_name}` : ""}${d.engine ? `, by ${d.engine}` : ""}${d.nightly ? ", made overnight" : ""}</span></span>${raw(icon.down)}</summary>
       <div class="doc-body">
+        ${d.kind === "resume" ? raw(kwReport(d.content)) : ""}
         ${isMd(d.content) ? raw(html`<div class="doc-text resume-view">${raw(mdToHtml(d.content))}</div>`) : raw(html`<div class="doc-text">${d.content}</div>`)}
         <div class="row">
           <button class="btn btn-primary" data-act="copy">Copy text</button>
