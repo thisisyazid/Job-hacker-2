@@ -112,3 +112,54 @@ BSc Information Systems, NUS, 2010 – 2014"""
     prompts.clear(); answers = iter([fixed])
     ai.tailor_resume(base, {"title": "PM", "description": "d"}, engine="local")
     assert len(prompts) == 1
+
+
+def test_tailored_resume_keeps_extra_sections(monkeypatch):
+    from app import ai
+    from app.resume_format import extra_sections, missing_sections
+    base = """Jane Tan
+jane@example.com | Singapore
+SCRUM MASTER AGILE COACH
+PROFESSIONAL SUMMARY
+Scrum Master who also builds software.
+INDEPENDENT PROJECTS — AI-ASSISTED PRODUCT BUILDING
+Job Hacker Free AI job-search workbench
+- Built a job-search app.
+PROFESSIONAL EXPERIENCE
+Scrum Master, Citibank | June 2022 – October 2023
+- Ran PI planning
+CERTIFICATIONS & EDUCATION
+- CSM"""
+    assert extra_sections(base) == ["INDEPENDENT PROJECTS"]  # headline line at the top isn't a section
+    without = "# Jane Tan\n\n## Professional Summary\nx\n\n## Professional Experience\n### Citibank | June 2022 – October 2023\n- x\n"
+    with_p = without.replace("## Professional Experience", "## Independent Projects\n### Job Hacker\n- y\n\n## Professional Experience")
+    assert missing_sections(["INDEPENDENT PROJECTS"], without) == ["INDEPENDENT PROJECTS"]
+    assert missing_sections(["INDEPENDENT PROJECTS"], with_p) == []
+
+    prompts = []
+    answers = iter([without, with_p])
+    monkeypatch.setattr(ai, "_ask", lambda system, user, **k: prompts.append(user) or next(answers))
+    out = ai.tailor_resume(base, {"title": "PM", "description": "d"}, engine="local")
+    assert "## Independent Projects" in out
+    assert "OTHER SECTIONS IN THE BASE RESUME" in prompts[0] and "INDEPENDENT PROJECTS" in prompts[0]
+    assert len(prompts) == 2 and "left out these sections" in prompts[1]
+    assert "KEEP EVERY SECTION" in ai.RESUME_SYSTEM
+
+
+def test_resume_prompt_uses_fit_keywords(monkeypatch):
+    import json
+    from app import ai
+    prompts = []
+    monkeypatch.setattr(ai, "_ask", lambda system, user, **k: prompts.append((system, user)) or "# Jane\n\n## Professional Summary\nx")
+    job = {"title": "Business Analyst", "description": "d",
+           "fit_json": json.dumps({"keywords": ["BPMN", "stakeholder management"], "gaps": ["No SQL shown"]})}
+    ai.tailor_resume("Jane Tan\nScrum Master", job, engine="local")
+    system, user = prompts[0]
+    assert "KEYWORDS FROM THE POSTING" in user and "BPMN, stakeholder management" in user
+    assert "GAPS THE FIT CHECK FOUND" in user and "No SQL shown" in user
+    assert "exact job title" in system and "No stock phrases" in system
+    # no fit check yet: no keyword block
+    prompts.clear()
+    ai.tailor_resume("Jane Tan\nScrum Master", {"title": "BA", "description": "d"}, engine="local")
+    assert "KEYWORDS FROM THE POSTING" not in prompts[0][1]
+    assert ai.fit_hints({"fit": {"keywords": ["a", " ", "b"]}}) == {"keywords": ["a", "b"], "gaps": []}

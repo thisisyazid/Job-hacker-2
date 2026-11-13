@@ -48,6 +48,46 @@ def base_roles(resume: str) -> list[str]:
     return out
 
 
+# Section headings the resume template always has; anything else in the base resume is an
+# "extra" section (projects, volunteering, awards...) that must survive tailoring.
+STANDARD_SECTIONS = re.compile(
+    r"summary|profile|objective|about|capabilit|skill|competenc|experience|employment|work history|career|"
+    r"certific|education|qualification|training|tools|technolog|tech stack|contact|references", re.I)
+SECTION_WORD = re.compile(r"[a-z]{5,}")
+
+
+def _headings(text: str) -> list[str]:
+    """Section headings: Markdown "## " lines, or short all-capitals lines in pasted text."""
+    out = []
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    for i, line in enumerate(lines):
+        if i < 3 and not line.startswith("#"):
+            continue  # name, contact and headline lines at the top
+        if line.startswith("## "):
+            out.append(line[3:].strip())
+        elif (not line.startswith("#") and 4 <= len(line) <= 80 and "@" not in line and not ROLE_LINE.search(line)
+              and re.search(r"[A-Z]{4}", line) and line == line.upper() and sum(c.isalpha() for c in line) >= 6
+              and not re.search(r"[|❖•▪]", line)):
+            out.append(line)
+    return out
+
+
+def extra_sections(resume: str) -> list[str]:
+    """Headings in the base resume beyond the standard ones, e.g. "INDEPENDENT PROJECTS"."""
+    out = []
+    for h in _headings(resume):
+        name = re.split(r"\s+[—–-]\s+|:", h)[0].strip()
+        if name and not STANDARD_SECTIONS.search(name) and SECTION_WORD.search(name.lower()) and name not in out:
+            out.append(name)
+    return out
+
+
+def missing_sections(extras: list[str], md: str) -> list[str]:
+    """Extra sections with no matching "## " heading in the tailored resume (any shared word counts)."""
+    have = {w for l in md.splitlines() if l.startswith("## ") for w in SECTION_WORD.findall(l.lower())}
+    return [s for s in extras if not set(SECTION_WORD.findall(s.lower())) & have]
+
+
 def _span(text: str) -> tuple[int, int] | None:
     """(end year, start year) of a role line; 'Present' counts as 9999."""
     m = ROLE_LINE.search(text)

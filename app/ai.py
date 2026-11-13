@@ -267,12 +267,13 @@ FIT_SYSTEM = """You are a frank career advisor. Score how well a candidate fits 
 10 = they meet essentially every requirement and it matches what they want.
 7 = solid match worth applying, a few gaps. 4 = stretch. 1 = clearly wrong role.
 If anything in the candidate's stated dealbreakers applies, score 2 or lower and say which.
+Count independent or side projects in the resume as real evidence of the skills they show.
 Return ONLY JSON:
 {"score": <int 1-10>,
  "verdict": "<one plain sentence, max 25 words>",
  "strengths": ["<max 4 short points, each tied to real resume evidence>"],
  "gaps": ["<max 4 short points: missing requirements or concerns>"],
- "keywords": ["<up to 8 terms from the posting worth mirroring in the resume>"]}"""
+ "keywords": ["<10-12 must-have hard skills, tools, methods, certifications or domain terms, in the posting's exact wording, most important first>"]}"""
 
 
 def fit(resume: str, preferences: str, job, engine: str | None = None) -> dict:
@@ -285,9 +286,9 @@ def fit(resume: str, preferences: str, job, engine: str | None = None) -> dict:
     try:
         d["score"] = max(1, min(10, int(d.get("score", 0))))
     except (TypeError, ValueError):
-        raise AIError("Claude didn't return a score. Try again.")
+        raise AIError("The AI didn't return a score. Try again.")
     for k in ("strengths", "gaps", "keywords"):
-        d[k] = [str(x) for x in (d.get(k) or [])][:8]
+        d[k] = [str(x) for x in (d.get(k) or [])][:12 if k == "keywords" else 8]
     d["verdict"] = str(d.get("verdict") or "")
     return d
 
@@ -295,17 +296,25 @@ def fit(resume: str, preferences: str, job, engine: str | None = None) -> dict:
 # ---------- documents ----------
 
 RESUME_SYSTEM = """You are an expert resume writer. You get a candidate's base resume and a target
-job. Produce a tailored resume in the exact Markdown structure below — nothing else.
+job. Produce a tailored resume that passes applicant tracking systems (ATS) and reads well to a
+recruiter skimming it for seven seconds. Use the exact Markdown structure below — nothing else.
 
 # Full Name
 email | phone | city | website
 Headline 1 | Headline 2 | Headline 3
 
 ## Professional Summary
-One paragraph, 3–5 sentences, written for this role.
+One or two short paragraphs written for this role (two only if the base summary has two).
 
 ## Core Capabilities
 - **Group name:** item, item, item
+
+## Independent Projects
+One line introducing the projects, if the base resume has one.
+### Project Name
+**Short description of the project**
+- What was built or achieved
+- **Tech:** item, item
 
 ## Professional Experience
 ### Company | Month YYYY – Month YYYY
@@ -318,20 +327,56 @@ One paragraph, 3–5 sentences, written for this role.
 - **Education:** ...
 
 ## Tools & Technology
-Comma-separated list.
+Comma-separated list, or "- **Group:** item, item" lines if the base resume groups its tools.
 
-Hard rules:
-- ROLE ORDER IS FIXED: list every role in reverse chronological order (most recent first),
-  with the same companies, titles and dates as the base resume. Never move a role up or down
-  because it is more relevant, and never drop a role. Older roles may be shortened to 1–2 bullets.
-- Within a role you MAY reorder, reword and trim bullets to mirror the job's language and
-  priorities. You MAY rewrite the summary, headlines and capability groups for this role.
-- Never invent employers, titles, dates, certifications, tools or metrics.
-- Write past roles in past tense and the current role (end date "Present") in present tense.
-- Use only the markers shown: #, ##, ###, "- " bullets and **bold**. No tables, no horizontal
-  rules, no decorative symbols (❖ ▪ • ★ etc.) — remove any that appear in the base resume.
-- Contact and headline lines separate items with " | ".
-- Keep it to about two pages; cut the least relevant bullets first.
+Before writing, work out (without writing it down) the posting's exact job title and its 8–12 most
+important requirements: hard skills, tools, methods, certifications and domain terms, in the
+posting's own words. Then:
+
+Truth (these override everything else):
+- Never invent employers, titles, dates, certifications, tools, skills or numbers. A keyword goes in
+  only where the base resume shows that experience; skip requirements it doesn't support.
+- ROLE ORDER IS FIXED: list every role in reverse chronological order (most recent first), with the
+  same companies, titles and dates as the base resume. Never move a role up or down because it is
+  more relevant, and never drop a role, including short, fixed-term or contract roles and the most
+  recent one. Older roles may be shortened to 1–2 bullets.
+- KEEP EVERY SECTION of the base resume. Sections beyond the ones above (projects, independent or
+  side projects, portfolio, volunteering, publications, awards, languages and the like) stay, with
+  their own heading and in the same place as in the base resume; the "Independent Projects" block
+  above shows the format. Keep every project; you may trim and reword its bullets for this role.
+
+Keywords (for the ATS):
+- Use the posting's exact wording for each requirement the candidate meets ("stakeholder
+  management", not a synonym). Write a term in full with its acronym once, e.g. "Certified
+  ScrumMaster (CSM)", "Business Process Model and Notation (BPMN)".
+- Put the matched hard skills in Core Capabilities, and also show each important one in use in a
+  bullet. Use a key term two or three times across the resume at most; never list keywords on
+  their own or repeat them to pad.
+
+Top of the page (for the recruiter's first look):
+- Headline 1 is the posting's exact job title if the candidate has held that role or done the same
+  work; otherwise their closest real title. The other headlines come from the base resume's
+  headlines and real job titles. Never add seniority (Senior, Lead, Head of) the base resume doesn't
+  claim.
+- The summary's first sentence names that title, years of experience and two or three of the
+  posting's must-have skills the candidate has. If the base summary mentions the candidate's own
+  projects or building work, keep a sentence about it.
+
+Bullets:
+- Within a role, put the bullet most relevant to this job first. You may reword and trim bullets.
+- Start each with a plain past-tense action verb (present tense for a current "Present" role).
+- Where the base resume gives a result, show it as result, then number, then how ("Cut ticket
+  processing time 40% by redesigning the intake workflow"). Keep every number exactly as given.
+- No stock phrases: results-driven, detail-oriented, dynamic, passionate, proven track record,
+  team player, self-starter, go-getter, synergy, spearheaded, leveraged, utilized, thought leader,
+  "responsible for". Plain, specific language a person would write.
+
+Format:
+- Use only the markers shown: #, ##, ###, "- " bullets and **bold**. No tables, no columns, no
+  horizontal rules, no decorative symbols (❖ ▪ • ★ etc.) — remove any from the base resume.
+- Standard section headings as shown. Contact and headline lines separate items with " | ".
+- Keep it to about two pages; cut the least relevant bullets first, never whole sections.
+- Leave out link labels such as "Download for Windows" or "Source on GitHub"; keep website addresses.
 - Output ONLY the resume."""
 
 COVER_SYSTEM = """You are an expert cover letter writer. You get a candidate's resume and a target
@@ -346,7 +391,8 @@ Dear <the hiring manager's name if the posting gives one, otherwise "Hiring Mana
 
 <paragraph 2: the most relevant experience from the resume, with concrete results>
 
-<paragraph 3: more relevant experience or skills that match the posting's requirements>
+<paragraph 3: more relevant experience or skills that match the posting's requirements; where it
+fits the role, the candidate's own projects (software or products they built) as evidence>
 
 <paragraph 4: a short close saying you'd welcome a conversation>
 
@@ -417,16 +463,42 @@ def finish_letter(text: str, name: str = "") -> str:
     return re.sub(r"\n{3,}", "\n\n", t).strip()
 
 
+def fit_hints(job) -> dict:
+    """Keywords and gaps from the job's saved fit check, if it has one."""
+    fit = job.get("fit") if isinstance(job, dict) else None
+    if fit is None:
+        raw = job.get("fit_json") if isinstance(job, dict) else getattr(job, "fit_json", "")
+        try:
+            fit = json.loads(raw) if raw else None
+        except (TypeError, ValueError):
+            fit = None
+    if not isinstance(fit, dict):
+        return {}
+    clean = lambda xs: [str(x).strip() for x in (xs or []) if str(x).strip()][:12]
+    return {"keywords": clean(fit.get("keywords")), "gaps": clean(fit.get("gaps"))[:4]}
+
+
 def tailor_resume(resume: str, job, extra: str = "", engine: str | None = None) -> str:
     if not resume.strip():
         raise AIError("Add your base resume in Settings first.")
-    from .resume_format import base_roles, missing_roles, sort_experience
+    from .resume_format import base_roles, extra_sections, missing_roles, missing_sections, sort_experience
     roles = base_roles(resume)
+    extras = extra_sections(resume)
     user = f"BASE RESUME:\n{resume}\n\nTARGET JOB:\n{_job_block(job)}"
     if roles:
         # A checklist helps smaller local models, which otherwise sometimes drop a role.
         user += ("\n\nROLES IN THE BASE RESUME. Every one must appear under Professional Experience, "
                  "most recent first, with its company, title and dates:\n" + "\n".join(f"- {r}" for r in roles))
+    hints = fit_hints(job)
+    if hints.get("keywords"):
+        user += ("\n\nKEYWORDS FROM THE POSTING (found by the fit check): " + ", ".join(hints["keywords"])
+                 + ". Use the posting's exact wording for each one the base resume supports; skip the rest.")
+    if hints.get("gaps"):
+        user += ("\n\nGAPS THE FIT CHECK FOUND:\n" + "\n".join(f"- {g}" for g in hints["gaps"])
+                 + "\nWhere the base resume has related experience, bring it forward; never claim what it doesn't show.")
+    if extras:
+        user += ("\n\nOTHER SECTIONS IN THE BASE RESUME. Keep each one, with its heading, in the same place:\n"
+                 + "\n".join(f"- {s}" for s in extras))
     if extra.strip():
         user += f"\n\nEXTRA INSTRUCTIONS FROM THE CANDIDATE:\n{extra}"
 
@@ -435,6 +507,13 @@ def tailor_resume(resume: str, job, extra: str = "", engine: str | None = None) 
         return re.sub(r"^```(?:markdown|md)?\s*|\s*```$", "", out.strip())
 
     out = ask(user)
+    gone = missing_sections(extras, out)
+    if gone:
+        log.warning("tailored resume left out section(s): %s; asking again", "; ".join(gone))
+        retry = ask(user + "\n\nIMPORTANT: a previous draft left out these sections of the base resume. "
+                    "Include each one, with its heading and all its items:\n" + "\n".join(f"- {s}" for s in gone))
+        if len(missing_sections(extras, retry)) < len(gone) and not missing_roles(roles, retry):
+            out = retry
     lost = missing_roles(roles, out)
     if lost:
         log.warning("tailored resume left out %d role(s): %s; asking again", len(lost), "; ".join(lost))

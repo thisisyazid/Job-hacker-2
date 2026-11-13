@@ -708,3 +708,14 @@ body.no-credit .credit { display: none; }
 .date-bar select, .date-bar input[type=date] { width: auto; min-height: 36px; padding: 4px 10px; font-size: 15px; border-radius: var(--radius-s); }
 .df-range { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
 .date-bar .btn-ghost { padding: 0 10px; min-height: 32px; }
+
+/* ---------- keyword match report on tailored resumes ---------- */
+.kw-report { border: 1px solid var(--line); border-radius: var(--radius-s); padding: 12px 14px; margin-bottom: 14px; background: var(--bg); }
+.kw-report > p { margin: 0 0 8px; font-size: 15px; }
+.kw-report > p.hint { margin: 8px 0 0; font-size: 14px; }
+.kw-chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.kwm { font-size: 14px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); }
+.kwm.hit { border-color: color-mix(in srgb, var(--fit-high) 45%, var(--line)); background: color-mix(in srgb, var(--fit-high) 12%, var(--surface)); }
+.kwm.hit span[aria-hidden] { color: var(--fit-high); font-weight: 700; }
+.kwm.miss { color: var(--muted); border-style: dashed; }
+.kw-none { margin: 0 0 12px; font-size: 14px; }
