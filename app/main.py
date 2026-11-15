@@ -271,6 +271,43 @@ def health():
     return {"ok": True}
 
 
+class LocalModelIn(BaseModel):
+    url: str = ""
+    model: str = ""
+
+
+def _local_model_out(url: str | None = None) -> dict:
+    """The local model's settings, what Ollama at that address has installed, and whether it works."""
+    use = (url or ai.ollama_url()).strip().rstrip("/")
+    out = {"url": ai.ollama_url(), "model": ai.ollama_model(), "default_url": config.OLLAMA_URL,
+           "default_model": config.OLLAMA_MODEL, "checked_url": use, "models": [], "error": ""}
+    if not use:
+        out["error"] = "No address set."
+        return out
+    try:
+        out["models"] = ai.ollama_models(use)
+    except Exception as e:
+        out["error"] = f"Couldn't reach Ollama at {use} ({e.__class__.__name__})."
+    st = ai.local_status(force=True)
+    out.update(ok=st["ok"], reason=st["reason"])
+    return out
+
+
+@app.get("/api/local-model")
+def get_local_model(url: str = ""):
+    return _local_model_out(url or None)
+
+
+@app.put("/api/local-model")
+def put_local_model(body: LocalModelIn):
+    url = body.url.strip()
+    if url and not re.match(r"^https?://", url, re.I):
+        url = "http://" + url
+    ai.save_local_settings(url, body.model)
+    log.info("local model set to %s at %s", ai.ollama_model(), ai.ollama_url() or "(none)")
+    return _local_model_out()
+
+
 @app.get("/api/session")
 def session_info(request: Request, db: Session = Depends(get_db)):
     authed = auth.is_authed(request)

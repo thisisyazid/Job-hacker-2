@@ -125,6 +125,13 @@ class Document(Base):
     job = relationship("Job", back_populates="documents")
 
 
+class AppSetting(Base):
+    """Install-wide settings changed in the app, e.g. the local model's address and name."""
+    __tablename__ = "app_settings"
+    key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, default="")
+
+
 class NightlySetting(Base):
     """Per-profile overnight run: make resumes / fit checks for saved jobs."""
     __tablename__ = "nightly_settings"

@@ -441,6 +441,46 @@ async function fillJobs(ids, intro = "") {
 // ---------- AI engine choice (Claude or the local Ollama model) ----------
 
 function engines() { return state.session?.engines || {}; }
+
+// Settings → Local model: where Ollama runs and which model to use (stored in the app, not .env).
+async function drawLocalModel(box, checkUrl) {
+  if (!box) return;
+  let m;
+  try { m = await api("/local-model" + (checkUrl ? `?url=${encodeURIComponent(checkUrl)}` : "")); }
+  catch (e) { box.innerHTML = html`<p class="hint">${e.message}</p>`; return; }
+  const url = checkUrl ?? m.url, picked = document.getElementById("lm-model")?.value || m.model;
+  const status = checkUrl ? (m.error ? m.error : `Found Ollama with ${m.models.length} model${m.models.length === 1 ? "" : "s"}. Pick one and save.`)
+    : m.ok ? `Working: ${m.model} at ${m.url}.` : (m.reason || m.error || "Not set up.");
+  box.innerHTML = html`
+    <p class="lm-status ${(!checkUrl && m.ok) || (checkUrl && !m.error) ? "ok" : "bad"}">${status}</p>
+    <div class="field"><label for="lm-url">Address</label>
+      <div class="lm-row"><input id="lm-url" type="text" inputmode="url" autocomplete="off" spellcheck="false" value="${url}" placeholder="${m.default_url || "http://192.168.1.20:11434"}">
+      <button class="btn" type="button" id="lm-check">Check</button></div>
+      <p class="hint">Where Ollama runs. Same machine as Job Hacker in Docker: <code>http://host.docker.internal:11434</code> (Podman: <code>http://host.containers.internal:11434</code>). Another computer on your network: <code>http://its-ip-address:11434</code>.</p></div>
+    <div class="field"><label for="lm-model">Model</label>
+      <input id="lm-model" type="text" list="lm-models" autocomplete="off" spellcheck="false" value="${picked}" placeholder="${m.default_model || "qwen3:14b"}">
+      <datalist id="lm-models">${m.models.map((x) => raw(html`<option value="${x}">`))}</datalist>
+      <p class="hint">${m.models.length ? `Installed there: ${m.models.join(", ")}.` : "Click Check to list the models installed there."} To add one, run <code>ollama pull qwen3:14b</code> on that computer.</p></div>
+    <div class="actions"><button class="btn btn-primary" type="button" id="lm-save">Save</button>
+      ${m.url !== m.default_url || m.model !== m.default_model ? raw(html`<button class="btn btn-ghost" type="button" id="lm-reset">Use the .env defaults (${m.default_model || "none"} at ${m.default_url || "no address"})</button>`) : ""}</div>`;
+  const save = async (u, mod, msg) => {
+    const done = busy(document.getElementById("lm-save"), "Saving");
+    try {
+      const r = await api("/local-model", { method: "PUT", json: { url: u, model: mod } });
+      state.session = null; await loadSession();  // the model pickers read the new name
+      toast(r.ok ? msg : `Saved, but the local model isn't working yet: ${r.reason || r.error}`, r.ok ? undefined : "error");
+      drawLocalModel(box);
+    } catch (e) { toast(e.message, "error"); done(); }
+  };
+  document.getElementById("lm-check").addEventListener("click", (e) => {
+    busy(e.currentTarget, "Checking");
+    drawLocalModel(box, document.getElementById("lm-url").value.trim());
+  });
+  document.getElementById("lm-url").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); document.getElementById("lm-check").click(); } });
+  document.getElementById("lm-save").addEventListener("click", () =>
+    save(document.getElementById("lm-url").value.trim(), document.getElementById("lm-model").value.trim(), "Local model saved and working"));
+  document.getElementById("lm-reset")?.addEventListener("click", () => save("", "", "Back to the .env defaults"));
+}
 // The Claude model chosen in this browser ("" = the server's default).
 function claudeModels() { return engines().claude?.models || []; }
 function claudeModel() {
@@ -1995,10 +2035,14 @@ async function renderSettings(params) {
       </div>
       <p class="hint">CSV needs a <code>Job title</code> or <code>Job URL</code> column; <code>Company Name</code>, <code>Location</code>, <code>Status</code> and <code>Description</code> are used when present. New jobs with a link but no description can be filled in from their postings right after the import.</p>
 
+      <h2 id="h-ai">AI models</h2>
+      <p class="lead">Claude is <strong>${engines().claude?.available ? "on" : "off"}</strong>${engines().claude?.available ? "" : " (add ANTHROPIC_API_KEY to your .env to use it)"}.</p>
+      <h3 class="sub-h">Local model (Ollama)</h3>
+      <div id="local-model"><p class="hint">Checking the local model…</p></div>
+
       <h2>Automations</h2>
       <p class="lead">n8n or other tools can add jobs by sending a POST to <code>${origin}/api/jobs</code> with the header <code>X-API-Key</code> set to your <code>API_TOKEN</code>. Send <code>title</code>, <code>url</code>, <code>company</code>, <code>description</code> and so on as JSON.</p>
       <label class="pick-remember" style="margin:6px 0 10px"><input type="checkbox" id="ai-ask" ${localGet("jh.aiNoAsk") === "1" ? "" : "checked"}> Ask which AI to use (or none) each time I add a job</label>
-      <p class="lead">AI models: Claude is <strong>${engines().claude?.available ? "on" : "off"}</strong>, and the local model (${engines().local?.model || "Ollama"}) is <strong>${engines().local?.available ? "on" : "off"}</strong>.${engines().local?.available || !engines().local?.reason ? "" : ` ${engines().local.reason}`}</p>
 
       <h2>Log files</h2>
       <p class="lead">Job Hacker keeps one log file per day of what it did: imports (and what each row became), links read, AI calls, overnight runs and errors. If something looks wrong, download that day's file and send it along. Logs never include your API key, resumes or job descriptions.</p>
@@ -2013,6 +2057,7 @@ async function renderSettings(params) {
   const reload = () => { state.jobs = null; state.session = null; route(); };
   drawNightly(document.getElementById("nightly"));
   drawLogs(document.getElementById("logs"));
+  drawLocalModel(document.getElementById("local-model"));
   document.getElementById("ai-ask")?.addEventListener("change", (e) => {
     localSet("jh.aiNoAsk", e.target.checked ? "" : "1");
     toast(e.target.checked ? "You'll be asked which AI to use when adding jobs" : "Adding jobs will use your last choice without asking");
