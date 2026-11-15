@@ -137,7 +137,7 @@ def test_csv_import(c):
                 "https://www.linkedin.com/jobs/view/2222222222,Agile Coach,Globex,Remote,2026-04-15,In progress\n"
                 ",,,,,\n")
     r = c.post("/api/import/csv", files={"file": ("jobs.csv", csv_text, "text/csv")}).json()
-    assert {k: v for k, v in r.items() if k not in ("to_fill", "possible_duplicates", "possible_archived")} == {"rows": 4, "added": 2, "duplicates": 1, "reposted": 0, "skipped": 1, "dead": 0}
+    assert {k: v for k, v in r.items() if k not in ("to_fill", "possible_duplicates", "possible_archived", "easy_apply_marked")} == {"rows": 4, "added": 2, "duplicates": 1, "reposted": 0, "skipped": 1, "dead": 0}
     assert len(r["to_fill"]) == 2  # both new jobs have a link and no description
     statuses = {j["title"]: j["status"] for j in c.get("/api/jobs").json()}
     assert statuses["Agile Coach"] == "applied" and statuses["Scrum Master"] == "saved"
@@ -760,3 +760,35 @@ def test_linkedin_helper(c, monkeypatch):
     assert r["text"].startswith("HEADLINE OPTIONS") and "**" not in r["text"]
     assert "TARGET ROLES: Scrum Master" in seen["user"] and "Old headline" in seen["user"]
     assert "never invent" in seen["system"]
+
+
+def test_easy_apply_from_pages_csv_and_automations(c, monkeypatch):
+    from app import main, scrape
+    assert scrape.linkedin_easy_apply('<code id="applyUrl" style="display:none"></code>') is False
+    assert scrape.linkedin_easy_apply('<a data-tracking-control-name="public_jobs_apply-link-onsite">Easy Apply</a>') is True
+    assert scrape.linkedin_easy_apply('<button class="apply">\n  Easy Apply\n</button>') is True
+    assert scrape.linkedin_easy_apply("<div>nothing here</div>") is None
+    assert scrape.easy_apply_value("EASY_APPLY") is True and scrape.easy_apply_value("easyApply") is True
+    assert scrape.easy_apply_value("offsite") is False and scrape.easy_apply_value("") is None
+    # n8n / Apify send apply_type
+    j = c.post("/api/jobs", json={"title": "BA", "url": "https://www.linkedin.com/jobs/view/4500000001/", "apply_type": "EASY_APPLY"}).json()
+    assert j["easy_apply"] is True
+    # a CSV column marks new jobs and fills in saved ones
+    other = c.post("/api/jobs", json={"title": "PO", "url": "https://www.linkedin.com/jobs/view/4500000002/"}).json()
+    assert other["easy_apply"] is None
+    csv_text = ("Job title,Job URL,Apply type\n"
+                "PO,https://www.linkedin.com/jobs/view/4500000002/,offsite\n"
+                "Scrum Master,https://www.linkedin.com/jobs/view/4500000003/,Easy Apply\n")
+    r = c.post("/api/import/csv", files={"file": ("e.csv", csv_text, "text/csv")}).json()
+    assert r["easy_apply_marked"] == 1 and r["added"] == 1
+    jobs = {x["url"]: x for x in c.get("/api/jobs").json()}
+    assert jobs["https://www.linkedin.com/jobs/view/4500000002/"]["easy_apply"] is False
+    assert jobs["https://www.linkedin.com/jobs/view/4500000003/"]["easy_apply"] is True
+    # checking one job on LinkedIn
+    monkeypatch.setattr(main, "check_easy_apply", lambda url: True)
+    r = c.post(f"/api/jobs/{other['id']}/easy-apply").json()
+    assert r["status"] == "found" and r["job"]["easy_apply"] is True
+    def limited(url):
+        raise scrape.ScrapeError("LinkedIn is limiting requests right now.")
+    monkeypatch.setattr(main, "check_easy_apply", limited)
+    assert c.post(f"/api/jobs/{other['id']}/easy-apply").json()["status"] == "failed"

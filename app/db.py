@@ -83,7 +83,8 @@ class Job(Base):
     source: Mapped[str] = mapped_column(String(50), default="manual")  # how it got here
     status: Mapped[str] = mapped_column(String(20), default="saved", index=True)
     tags: Mapped[str] = mapped_column(String(300), default="")
-    referred_by: Mapped[str] = mapped_column(String(200), default="", server_default="")  # who referred you (free text)
+    referred_by: Mapped[str] = mapped_column(String(200), default="", server_default="")
+    easy_apply: Mapped[bool | None] = mapped_column(Boolean, nullable=True)  # LinkedIn Easy Apply; None = not known  # who referred you (free text)
     notes: Mapped[str] = mapped_column(Text, default="")
     fit_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
     fit_json: Mapped[str] = mapped_column(Text, default="")
@@ -171,7 +172,8 @@ _ADDED_COLUMNS = {
     "nightly_settings": {"max_jobs": "INTEGER DEFAULT 40", "stop_at": "VARCHAR(5) DEFAULT ''",
                          "claude_model": "VARCHAR(60) DEFAULT ''", "fit_new": "BOOLEAN DEFAULT 0"},
     "jobs": {"queued": "BOOLEAN DEFAULT 0", "reposted_at": "DATETIME", "first_posted": "VARCHAR(50) DEFAULT ''",
-             "archived_at": "DATETIME", "referred_by": "VARCHAR(200) DEFAULT ''"},
+             "archived_at": "DATETIME", "referred_by": "VARCHAR(200) DEFAULT ''",
+             "easy_apply": "BOOLEAN"},
 }
 
 
