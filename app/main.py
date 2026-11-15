@@ -22,7 +22,7 @@ from .db import STATUSES, Document, Job, NightlyRun, Persona, User, get_db, init
 from . import dupes
 from .docx_export import to_docx
 from .pdf_export import to_pdf
-from .scrape import ScrapeError, fetch_job, link_key, looks_like_url, normalize_url
+from .scrape import ScrapeError, check_easy_apply, easy_apply_value, fetch_job, link_key, looks_like_url, normalize_url
 
 logs.setup()
 log = logs.log
@@ -122,7 +122,7 @@ def job_out(j: Job, full: bool = True) -> dict:
         "id": j.id, "url": j.url, "title": j.title, "company": j.company, "location": j.location,
         "salary": j.salary, "employment_type": j.employment_type, "posted_date": j.posted_date,
         "source": j.source, "status": j.status, "tags": j.tags, "fit_score": j.fit_score,
-        "referred_by": j.referred_by or "",
+        "referred_by": j.referred_by or "", "easy_apply": j.easy_apply,
         "queued": bool(j.queued), "reposted_at": iso(j.reposted_at), "first_posted": j.first_posted or "",
         "archived_at": iso(j.archived_at),
         "applied_at": iso(j.applied_at), "created_at": iso(j.created_at), "updated_at": iso(j.updated_at),
@@ -167,6 +167,8 @@ class JobIn(BaseModel):
     tags: str = ""
     notes: str = ""
     referred_by: str = Field(default="", max_length=200)
+    easy_apply: Optional[bool] = None
+    apply_type: str = ""  # for automations: "EASY_APPLY" / "easyApply" / "offsite", as scrapers send it
 
 
 class JobPatch(BaseModel):
@@ -512,6 +514,9 @@ def create_job(body: JobIn, user: User = Depends(current_user), db: Session = De
         raise HTTPException(422, DEAD_LINK)
     url = normalize_url(body.url or "")
     data = body.model_dump()
+    apply_type = data.pop("apply_type", "")
+    if data.get("easy_apply") is None:
+        data["easy_apply"] = easy_apply_value(apply_type)
     data["url"] = url or None
     if looks_like_url(data.get("company")):
         data["company"] = ""
@@ -524,6 +529,9 @@ def create_job(body: JobIn, user: User = Depends(current_user), db: Session = De
             if data.get(k) and not getattr(dupe, k):
                 setattr(dupe, k, data[k])
                 changed = True
+        if data.get("easy_apply") is not None and dupe.easy_apply is None:
+            dupe.easy_apply = data["easy_apply"]
+            changed = True
         if changed:
             db.commit()
         return JSONResponse({**job_out(dupe), "duplicate": True}, status_code=200)
@@ -570,7 +578,7 @@ def job_from_url(body: UrlIn, user: User = Depends(current_user), db: Session = 
     if not draft.get("title"):
         log.info("bulk link %s: no title on the page", url)
         return {"status": "failed", "reason": "No job title on that page. The job has probably been taken down.", "url": url}
-    j = Job(user_id=user.id, url=url, source="bulk", title=draft["title"][:300],
+    j = Job(user_id=user.id, url=url, source="bulk", title=draft["title"][:300], easy_apply=draft.get("easy_apply"),
             **{k: draft.get(k) or "" for k in DETAIL_FIELDS})
     db.add(j)
     db.commit()
@@ -600,12 +608,31 @@ def refresh_job(job_id: int, body: Optional[EngineIn] = None, user: User = Depen
         draft["title"] = draft["title"][:300]
     for k in filled:
         setattr(j, k, draft[k])
+    if draft.get("easy_apply") is not None and j.easy_apply != draft["easy_apply"]:
+        j.easy_apply = draft["easy_apply"]
+        filled.append("easy apply")
     log.info("fill in job %s (%s) with %s: %s", j.id, j.url, method, ", ".join(filled) if filled else "nothing new found")
     if filled:
         db.commit()
         db.refresh(j)
     return {"status": "updated" if filled else "unchanged", "filled": filled, "method": method,
             "job": job_out(j, full=False)}
+
+
+@app.post("/api/jobs/{job_id}/easy-apply")
+def recheck_easy_apply(job_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Look up on LinkedIn whether this job uses Easy Apply. Always 200: status found | unknown | failed."""
+    j = own_job(job_id, user, db)
+    try:
+        v = check_easy_apply(j.url or "")
+    except ScrapeError as e:
+        return {"status": "failed", "reason": str(e), "job": job_out(j, full=False)}
+    if v is not None:
+        j.easy_apply = v
+        db.commit()
+        db.refresh(j)
+    log.info("easy apply check for job %s (%s): %s", j.id, j.url, {True: "Easy Apply", False: "company site", None: "not known"}[v])
+    return {"status": "found" if v is not None else "unknown", "easy_apply": v, "job": job_out(j, full=False)}
 
 
 @app.post("/api/cleanup/dead-links")
@@ -1055,6 +1082,9 @@ async def import_csv(file: UploadFile = File(...), user: User = Depends(current_
         return ""
 
     log.info("CSV import into profile %r: %d rows", user.name, len(rows))
+    EASY = ("easy apply", "easyapply", "easy_apply", "apply type", "applytype", "apply_type", "apply method",
+            "applymethod", "apply_method", "application type")
+    easy_marked = 0
     POSTED = ("published at", "posted", "posted date", "date posted", "date")
 
     # A job that's reposted keeps its link, so it can appear more than once.
@@ -1096,6 +1126,10 @@ async def import_csv(file: UploadFile = File(...), user: User = Depends(current_
         dupe = db.get(Job, links[link_key(url)]) if url and link_key(url) in links else None
         if dupe:
             n_dupes += 1
+            ea = easy_apply_value(col(row, *EASY))
+            if ea is not None and dupe.easy_apply != ea:
+                dupe.easy_apply = ea  # a later export can say whether it's Easy Apply
+                easy_marked += 1
             latest = newest.get(url, "")
             old = dupe.posted_date or ""
             where = f"job {dupe.id}" + (" (archived)" if dupe.archived_at else "")
@@ -1117,7 +1151,8 @@ async def import_csv(file: UploadFile = File(...), user: User = Depends(current_
                    posted_date=newest.get(url) or col(row, *POSTED),
                    description=col(row, "description", "job description"),
                    status=_map_status(col(row, "status")), source="csv",
-                   referred_by=col(row, "referred by", "referrer", "referral name", "referred_by")[:200])
+                   referred_by=col(row, "referred by", "referrer", "referral name", "referred_by")[:200],
+                   easy_apply=easy_apply_value(col(row, *EASY)))
         db.add(job)
         db.flush()
         added += 1
@@ -1141,7 +1176,7 @@ async def import_csv(file: UploadFile = File(...), user: User = Depends(current_
              "%d without a title, %d taken down, %d look like jobs already saved from another site (%d of those archived)",
              len(rows), added, n_dupes, redated, invalid, dead, possible, possible_archived)
     return {"rows": len(rows), "added": added, "duplicates": n_dupes, "reposted": redated, "skipped": invalid, "dead": dead,
-            "possible_duplicates": possible, "possible_archived": possible_archived,
+            "possible_duplicates": possible, "possible_archived": possible_archived, "easy_apply_marked": easy_marked,
             "to_fill": to_fill}
 
 
@@ -1155,7 +1190,7 @@ def export_all(db: Session = Depends(get_db)):
             "jobs": [{
                 **{k: getattr(j, k) for k in ("url", "title", "company", "location", "salary", "employment_type",
                                                "posted_date", "description", "source", "status", "tags", "notes",
-                                               "fit_score", "fit_json", "first_posted", "referred_by")},
+                                               "fit_score", "fit_json", "first_posted", "referred_by", "easy_apply")},
                 "applied_at": iso(j.applied_at), "created_at": iso(j.created_at), "reposted_at": iso(j.reposted_at),
                 "archived_at": iso(j.archived_at),
                 "documents": [{"kind": d.kind, "content": d.content, "persona_name": d.persona_name,
@@ -1240,6 +1275,7 @@ async def import_backup(file: UploadFile = File(...), db: Session = Depends(get_
                 fit_score=j.get("fit_score"), applied_at=_parse_dt(j.get("applied_at")),
                 reposted_at=_parse_dt(j.get("reposted_at")), first_posted=j.get("first_posted") or "",
                 archived_at=_parse_dt(j.get("archived_at")), referred_by=(j.get("referred_by") or "")[:200],
+                easy_apply=easy_apply_value(j.get("easy_apply")),
                 created_at=_parse_dt(j.get("created_at")) or now(),
             )
             db.add(job)

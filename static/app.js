@@ -161,6 +161,7 @@ function jobPasses(j) {
   if (f.has("reposted") && !j.reposted_at) return false;
   if (f.has("nodesc") && (j.has_description || looksLikeUrl(j.title))) return false;
   if (f.has("dupes") && !liveDupes().has(j.id)) return false;
+  if (f.has("easy") && j.easy_apply !== true) return false;
   return true;
 }  // the job table's current rows (filtered and sorted), for "select all"
 const PAGE = 100;
@@ -634,6 +635,9 @@ async function renderList(keep = false) {
   const reposted = live.filter((j) => j.reposted_at).length;
   const nodesc = live.filter((j) => !j.has_description && !looksLikeUrl(j.title)).length;
   const ndupes = liveDupes().size;
+  const neasy = live.filter((j) => j.easy_apply === true).length;
+  const easyOpen = live.filter((j) => j.easy_apply === true && (j.status === "saved" || j.status === "referral")).length;
+  const easyUnknown = live.filter((j) => j.easy_apply == null && isLinkedIn(j)).length;
   const y = scrollY;
   const focusQ = document.activeElement?.id === "q";
 
@@ -661,6 +665,7 @@ async function renderList(keep = false) {
           ${reposted || fOn("reposted") ? raw(html`<button class="stage stage-rp" data-filter="reposted" aria-pressed="${fOn("reposted")}" title="Jobs an import showed were posted again, in any stage"><span class="dot"></span>Reposted <span class="n">${reposted}</span></button>`) : ""}
           ${STAGES.map((s) => raw(html`<button class="stage" data-filter="${s.id}" aria-pressed="${fOn(s.id)}" style="--c:${raw(stageColor(s.id))}"><span class="dot"></span>${s.label} <span class="n">${counts[s.id]}</span></button>`))}
           ${nodesc || fOn("nodesc") ? raw(html`<button class="stage stage-nd" data-filter="nodesc" aria-pressed="${fOn("nodesc")}" title="Jobs without a description. Select them and use Fill in"><span class="dot"></span>No description <span class="n">${nodesc}</span></button>`) : ""}
+          ${neasy || easyUnknown || fOn("easy") ? raw(html`<button class="stage stage-easy" data-filter="easy" aria-pressed="${fOn("easy")}" title="LinkedIn jobs you can apply to with Easy Apply, right on LinkedIn"><span class="dot"></span>Easy Apply <span class="n">${neasy}</span></button>`) : ""}
           ${ndupes || fOn("dupes") ? raw(html`<button class="stage stage-dup" data-filter="dupes" aria-pressed="${fOn("dupes")}" title="Same company and a near-identical title, saved more than once (for example from LinkedIn and Indeed)"><span class="dot"></span>Possible duplicates <span class="n">${ndupes}</span></button>`) : ""}
           ${archived || fOn("archived") ? raw(html`<button class="stage stage-ar" data-filter="archived" aria-pressed="${fOn("archived")}" title="Jobs you've archived, kept for searching later"><span class="dot"></span>Archived <span class="n">${archived}</span></button>`) : ""}
           <button class="stage" data-filter="all" aria-pressed="${fOn("all")}" title="Every job, archived ones included">All <span class="n">${jobs.length}</span></button>
@@ -668,6 +673,7 @@ async function renderList(keep = false) {
       </section>
       ${fOnly("closed") && counts.closed ? raw(html`<div class="archive-bar"><p>Done with these? Archive them to clear them out of the way. They stay searchable under <strong>Archived</strong>.</p>
         <button class="btn btn-s" id="ar-closed">Archive all ${counts.closed} closed job${counts.closed === 1 ? "" : "s"}</button></div>`) : ""}
+      ${fOn("easy") ? raw(html`<div class="archive-bar"><p>${neasy ? `LinkedIn Easy Apply jobs: apply in a few clicks without leaving LinkedIn${easyOpen ? `. ${easyOpen} ${easyOpen === 1 ? "is" : "are"} still at Saved or Referral; tap Saved as well to see just those` : ""}.` : "No Easy Apply jobs found yet."}${easyUnknown ? ` ${easyUnknown} LinkedIn job${easyUnknown === 1 ? " hasn't" : "s haven't"} been checked yet: switch this filter off, select them and use Check Easy Apply.` : ""}</p></div>`) : ""}
       ${fOn("dupes") && ndupes ? raw(html`<div class="archive-bar"><p>Jobs with the same company and a near-identical title, usually the same job saved from two sites. Hover the tag to see the match, then select the extra copies and archive or delete them.</p></div>`) : ""}
       ${fOn("nodesc") && nodesc ? raw(html`<div class="archive-bar"><p>Tick the jobs to fill in (or the box at the top of the table for all of them), then click <strong>Fill in</strong> in the bar at the bottom.</p></div>`) : ""}
       ${fOn("archived") && archived ? raw(html`<div class="archive-bar"><p>Archived jobs keep their stage and everything in them. Search them here, or open one to unarchive it.</p></div>`) : ""}
@@ -692,6 +698,7 @@ async function renderList(keep = false) {
           <button class="btn btn-s" id="sel-tn-rm">Off tonight</button>
           <button class="btn btn-s" id="sel-archive">Archive</button>
           <button class="btn btn-s" id="sel-unarchive">Unarchive</button>
+          <button class="btn btn-s" id="sel-easy" title="Look up on LinkedIn whether each job uses Easy Apply">Check Easy Apply</button>
           <button class="btn btn-ghost btn-s" id="sel-clear">Clear</button>
         </div>
       </div>
@@ -868,6 +875,7 @@ async function renderList(keep = false) {
   document.getElementById("sel-clear").addEventListener("click", () => { state.selected.clear(); syncSel(); });
   document.getElementById("sel-archive").addEventListener("click", () => bulkArchive(true));
   document.getElementById("sel-unarchive").addEventListener("click", () => bulkArchive(false));
+  document.getElementById("sel-easy").addEventListener("click", (e) => bulkEasyCheck(e.currentTarget));
   document.getElementById("sel-fill").addEventListener("click", bulkFill);
   document.getElementById("sel-tn-add").addEventListener("click", () => bulkTonight(true));
   document.getElementById("sel-tn-rm").addEventListener("click", () => bulkTonight(false));
@@ -1236,6 +1244,7 @@ function openRowMenu(x, y, rowId) {
     ${tnRm ? raw(html`<button role="menuitem" data-act="tn-rm">Remove from tonight's list${n > 1 ? ` (${tnRm})` : ""}</button>`) : ""}
     ${arch < n ? raw(html`<button role="menuitem" data-act="archive">Archive${n > 1 ? ` (${n - arch})` : ""}</button>`) : ""}
     ${arch ? raw(html`<button role="menuitem" data-act="unarchive">Unarchive${n > 1 ? ` (${arch})` : ""}</button>`) : ""}
+    ${pick.some(isLinkedIn) ? raw(html`<button role="menuitem" data-act="easy">Check Easy Apply${n > 1 ? ` (${pick.filter(isLinkedIn).length})` : ""}</button>`) : ""}
     <hr>
     <button role="menuitem" data-act="clear">Clear selection</button>`;
   document.body.append(m);
@@ -1258,6 +1267,7 @@ function openRowMenu(x, y, rowId) {
     else if (act === "tn-rm") bulkTonight(false);
     else if (act === "archive") bulkArchive(true);
     else if (act === "unarchive") bulkArchive(false);
+    else if (act === "easy") bulkEasyCheck();
     else if (act === "clear") { state.selected.clear(); syncSel(); }
   });
 }
@@ -1269,6 +1279,38 @@ document.addEventListener("keydown", (e) => {
   if (document.querySelector(".ctx-menu")) return closeRowMenu();
   if (state.selected.size && document.getElementById("jobs") && !document.querySelector("dialog[open]")) { state.selected.clear(); syncSel(); }
 });
+
+// LinkedIn jobs can be checked for Easy Apply.
+function isLinkedIn(j) { return /linkedin\.com\/jobs\/view\//i.test(j.url || ""); }
+
+// Look up Easy Apply for the selected LinkedIn jobs, one at a time with a pause, so LinkedIn doesn't
+// start refusing. Stops if LinkedIn says to slow down; the rest can be checked later.
+let easyCancel = false;
+async function bulkEasyCheck(btn) {
+  const ids = selectedJobs().filter(isLinkedIn).map((j) => j.id);
+  if (!ids.length) return;
+  easyCancel = false;
+  let yes = 0, no = 0, unknown = 0, done = 0, stopped = "";
+  const label = btn?.textContent;
+  for (const id of ids) {
+    if (easyCancel) { stopped = "Stopped."; break; }
+    if (btn) btn.textContent = `Checking ${done + 1} of ${ids.length}…`;
+    else toast(`Checking Easy Apply: ${done + 1} of ${ids.length}`);
+    try {
+      const r = await api(`/jobs/${id}/easy-apply`, { method: "POST" });
+      if (r.status === "failed") { stopped = r.reason; break; }
+      const i = state.jobs.findIndex((x) => x.id === id);
+      if (i >= 0) state.jobs[i] = { ...state.jobs[i], ...r.job };
+      if (r.easy_apply === true) yes++; else if (r.easy_apply === false) no++; else unknown++;
+    } catch (e) { stopped = e.message; break; }
+    done++;
+    if (done < ids.length) await new Promise((res) => setTimeout(res, 800));
+  }
+  if (btn && label) btn.textContent = label;
+  const parts = [`${yes} Easy Apply`, `${no} on the company's site`, unknown && `${unknown} not shown on the page`].filter(Boolean);
+  toast(`Checked ${done} of ${ids.length}: ${parts.join(", ")}.${stopped ? ` ${stopped}` : ""}`, stopped && done < ids.length ? "error" : undefined);
+  renderList(true);
+}
 
 // A job the Fill in action can help: it has a link and no description.
 function fillable(j) { return !!j.url && !j.has_description && !looksLikeUrl(j.title); }
@@ -1298,6 +1340,9 @@ function drawSelBar() {
   bar.querySelector("#sel-unarchive").hidden = arch === 0;
   bar.querySelector("#sel-archive").textContent = `Archive ${picked.length - arch}`;
   bar.querySelector("#sel-unarchive").textContent = `Unarchive ${arch}`;
+  const li = picked.filter(isLinkedIn).length;
+  bar.querySelector("#sel-easy").hidden = !li;
+  bar.querySelector("#sel-easy").textContent = `Check Easy Apply ${li}`;
   const all = document.getElementById("sel-all");
   if (all) {
     const inView = lastRows.filter((j) => state.selected.has(j.id)).length;
@@ -1320,6 +1365,7 @@ function rowHtml(j) {
           ? raw(html`<button type="button" class="flag warn flag-fill" data-fillrow="${j.id}" title="Read the description from the posting">No description · Fill in</button>`)
           : raw('<span class="flag warn" title="No link saved, so it can\'t be filled in automatically">No description</span>')}
         ${j.archived_at ? raw('<span class="flag ar">Archived</span>') : ""}
+        ${j.easy_apply === true ? raw('<span class="flag ea" title="Apply on LinkedIn with Easy Apply">Easy Apply</span>') : ""}
         ${(() => { const m = !j.archived_at && liveDupes().get(j.id); return m ? raw(html`<span class="flag dup" title="${"Looks like: " + m.map(dupeLabel).join(" | ")}">Possible duplicate</span>`) : ""; })()}
         ${j.reposted_at ? raw(html`<span class="flag rp" title="${j.first_posted ? `First posted ${fmtPosted(j.first_posted, true)}` : "Posted again"}">Reposted</span>`) : ""}
         <span class="m-tags">${j.has_resume ? raw('<span class="flag ok">Resume</span>') : ""}${j.applied_at ? raw(html`<span class="m-applied">Applied ${fmtPosted(localDay(j.applied_at))}</span>`) : ""}</span>
@@ -1629,6 +1675,7 @@ function jobForm(d, submitLabel) {
         <div class="field"><label for="jp">Posted</label><input id="jp" name="posted_date" type="text" value="${d.posted_date}"></div>
         <div class="field"><label for="ju">Link</label><input id="ju" name="url" type="url" inputmode="url" value="${d.url || ""}"></div>
         <div class="field"><label for="jr">Referred by</label><input id="jr" name="referred_by" type="text" maxlength="200" value="${d.referred_by || ""}" placeholder="Who referred you (optional)"></div>
+        <input type="hidden" name="easy_apply" value="${d.easy_apply == null ? "" : String(d.easy_apply)}">
       </div>
       <div class="field">
         <label for="jd">Description</label>
@@ -1641,6 +1688,7 @@ function jobForm(d, submitLabel) {
 function formData(form) {
   const out = {};
   ["title", "company", "location", "salary", "employment_type", "posted_date", "url", "description", "referred_by"].forEach((k) => out[k] = form[k].value.trim());
+  if (form.easy_apply && form.easy_apply.value) out.easy_apply = form.easy_apply.value === "true";
   return out;
 }
 
@@ -1668,7 +1716,7 @@ async function renderJob(id) {
   const j = await api(`/jobs/${id}`);
   docJob = j;
   const personas = state.session.ai_enabled ? await api("/personas") : [];
-  const facts = [["Referred by", j.referred_by], ["Location", j.location], ["Salary", j.salary], ["Job type", j.employment_type], ["Posted", fmtPosted(j.posted_date, true) + (j.reposted_at ? (j.first_posted ? ` (reposted; first posted ${fmtPosted(j.first_posted, true)})` : " (reposted)") : "")], ["Saved", longDate(j.created_at)]].filter(([, v]) => v);
+  const facts = [["Apply", j.easy_apply === true ? "Easy Apply on LinkedIn" : j.easy_apply === false ? "On the company's website" : ""], ["Referred by", j.referred_by], ["Location", j.location], ["Salary", j.salary], ["Job type", j.employment_type], ["Posted", fmtPosted(j.posted_date, true) + (j.reposted_at ? (j.first_posted ? ` (reposted; first posted ${fmtPosted(j.first_posted, true)})` : " (reposted)") : "")], ["Saved", longDate(j.created_at)]].filter(([, v]) => v);
   const desc = j.description || "";
   const FILLABLE = FILL_LABELS;
   const missing = Object.keys(FILLABLE).filter((k) => !(j[k] || "").trim());
@@ -2182,6 +2230,7 @@ function importSummary(r) {
   const parts = [`Imported ${added} job${added === 1 ? "" : "s"}`];
   if (r.duplicates) parts.push(`${r.duplicates} already saved`);
   if (r.reposted) parts.push(`${r.reposted} reposted (posted date updated)`);
+  if (r.easy_apply_marked) parts.push(`${r.easy_apply_marked} saved job${r.easy_apply_marked === 1 ? "" : "s"} updated with Easy Apply from the file`);
   if (r.possible_duplicates) parts.push(`${r.possible_duplicates} look like jobs you already have${r.possible_archived ? ` (${r.possible_archived} like ones you archived)` : ""} (see Possible duplicates)`);
   if (r.dead) parts.push(`${r.dead} taken down left out`);
   if (r.skipped) parts.push(`${r.skipped} without a title skipped`);

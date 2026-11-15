@@ -158,6 +158,30 @@ def _mycareersfuture(client: httpx.Client, url: str) -> dict | None:
     )
 
 
+def easy_apply_value(v) -> bool | None:
+    """Read an "Easy Apply" value from a CSV cell or an automation: true/yes/EASY_APPLY/easyApply -> True,
+    false/no/offsite/external -> False, anything else -> None (not known)."""
+    if isinstance(v, bool):
+        return v
+    s = re.sub(r"[^a-z]", "", str(v or "").lower())
+    if s in ("true", "yes", "y", "1", "easyapply", "easy", "onsite", "linkedin", "simpleonsiteapply", "complexonsiteapply"):
+        return True
+    if s in ("false", "no", "n", "0", "offsite", "external", "companywebsite", "companysite", "offsiteapply"):
+        return False
+    return None
+
+
+def linkedin_easy_apply(html: str) -> bool | None:
+    """From LinkedIn's public job page: does it use Easy Apply (apply on LinkedIn) or send people
+    to the company's site? None when the page doesn't say."""
+    low = html.lower()
+    if 'id="applyurl"' in low or "apply-link-offsite" in low or "offsite-apply" in low:
+        return False
+    if "apply-link-onsite" in low or re.search(r">\s*easy apply\s*<", low):
+        return True
+    return None
+
+
 def _linkedin(client: httpx.Client, url: str) -> dict | None:
     jid = linkedin_job_id(url)
     if not jid:
@@ -181,7 +205,7 @@ def _linkedin(client: httpx.Client, url: str) -> dict | None:
     title = t(".top-card-layout__title") or t("h2")
     if not title:
         return None
-    return _draft(
+    d = _draft(
         title=title,
         company=t(".topcard__org-name-link") or t(".topcard__flavor"),
         location=t(".topcard__flavor--bullet"),
@@ -190,6 +214,26 @@ def _linkedin(client: httpx.Client, url: str) -> dict | None:
         posted_date=t(".posted-time-ago__text"),
         description=html_to_text(str(desc_el)) if desc_el else "",
     )
+    d["easy_apply"] = linkedin_easy_apply(r.text)
+    return d
+
+
+def check_easy_apply(url: str) -> bool | None:
+    """Look up whether a LinkedIn job uses Easy Apply, without AI. None if it isn't a
+    LinkedIn job or the page doesn't say."""
+    jid = linkedin_job_id(url or "")
+    if not jid:
+        return None
+    try:
+        with httpx.Client(headers=HEADERS, timeout=TIMEOUT, follow_redirects=True) as client:
+            r = client.get(f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{jid}")
+    except httpx.HTTPError as e:
+        raise ScrapeError(f"Couldn't reach LinkedIn ({e.__class__.__name__}).")
+    if r.status_code in (429, 999):
+        raise ScrapeError("LinkedIn is limiting requests right now. Try again in a few minutes.")
+    if r.status_code != 200:
+        return None
+    return linkedin_easy_apply(r.text)
 
 
 # ---------- generic ----------

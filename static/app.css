@@ -21,6 +21,7 @@
   --st-closed: #BCC4CA;
   --repost: #8A3FD1;
   --dup: #B4531F;
+  --easy: #0A66C2;
   --viz-1: #2a78d6;
   --viz-2: #eb6834;
   --archived: #6B7785;
@@ -61,6 +62,7 @@
     --st-closed: #4A565F;
     --repost: #C49BFF;
     --dup: #F29A66;
+    --easy: #70B5F9;
     --viz-1: #3987e5;
     --viz-2: #d95926;
     --archived: #9AA6B2;
@@ -288,6 +290,7 @@ body:has(.sel-bar:not([hidden])) #toast { bottom: 84px; }
 .stage-rp { --c: var(--repost); }
 .stage-ar { --c: var(--archived); }
 .stage-dup { --c: var(--dup); }
+.stage-easy { --c: var(--easy); }
 .stage-nd { --c: var(--st-offer); }
 .archive-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px;
   padding: 8px 8px 8px 14px; margin: 0 0 10px; background: var(--soft); border: 1px solid var(--line); border-radius: var(--radius-m); }
@@ -327,6 +330,7 @@ body:has(.sel-bar:not([hidden])) #toast { bottom: 84px; }
 .flag.ok { color: var(--st-interviewing); background: color-mix(in srgb, var(--st-interviewing) 13%, transparent); }
 .flag.night { color: var(--accent); background: var(--accent-soft); }
 .flag.ar { color: var(--archived); background: color-mix(in srgb, var(--archived) 15%, transparent); }
+.flag.ea { color: var(--easy); background: color-mix(in srgb, var(--easy) 13%, transparent); font-weight: 700; }
 .flag.dup { color: var(--dup); background: color-mix(in srgb, var(--dup) 13%, transparent); }
 .flag.rp { color: var(--repost); background: color-mix(in srgb, var(--repost) 13%, transparent); }
 .flag.warn { color: var(--st-offer); background: color-mix(in srgb, var(--st-offer) 13%, transparent); }
