@@ -721,3 +721,16 @@ def test_import_skips_archived_jobs_and_flags_reposts_of_them(c):
     # adding by hand finds the archived job too
     again = c.post("/api/jobs", json={"title": "Data Engineer", "company": "Grab", "url": "https://grab.careers/jobs/77/"})
     assert again.status_code == 200 and again.json()["id"] == b["id"]
+
+
+def test_local_model_settings_saved_in_app(c, monkeypatch):
+    from app import ai
+    monkeypatch.setattr(ai, "ollama_models", lambda url=None: ["qwen3:14b", "qwen3:8b"])
+    r = c.get("/api/local-model?url=http://bazzite.local:11434").json()
+    assert r["checked_url"] == "http://bazzite.local:11434" and r["models"] == ["qwen3:14b", "qwen3:8b"]
+    r = c.put("/api/local-model", json={"url": "bazzite.local:11434/", "model": "qwen3:8b"}).json()
+    assert r["url"] == "http://bazzite.local:11434" and r["model"] == "qwen3:8b"
+    assert ai.ollama_url() == "http://bazzite.local:11434" and ai.label("local") == "Local (qwen3:8b)"
+    # empty values go back to the .env defaults
+    r = c.put("/api/local-model", json={"url": "", "model": ""}).json()
+    assert r["url"] == r["default_url"] and r["model"] == r["default_model"]

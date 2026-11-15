@@ -719,3 +719,11 @@ body.no-credit .credit { display: none; }
 .kwm.hit span[aria-hidden] { color: var(--fit-high); font-weight: 700; }
 .kwm.miss { color: var(--muted); border-style: dashed; }
 .kw-none { margin: 0 0 12px; font-size: 14px; }
+
+/* ---------- Settings → local model ---------- */
+.sub-h { font-size: 18px; margin: 18px 0 8px; }
+.lm-status { margin: 0 0 12px; font-size: 16px; padding-left: 22px; position: relative; }
+.lm-status::before { content: ""; position: absolute; left: 4px; top: .45em; width: 10px; height: 10px; border-radius: 50%; background: var(--danger); }
+.lm-status.ok::before { background: var(--fit-high); }
+.lm-row { display: flex; gap: 8px; }
+.lm-row input { flex: 1; min-width: 0; }

@@ -1,7 +1,8 @@
 """Everything that talks to an AI model. Two engines:
 
   claude  Anthropic API (ANTHROPIC_API_KEY)
-  local   Ollama on the Mac mini (OLLAMA_URL, OLLAMA_MODEL), e.g. qwen3:14b
+  local   Ollama, e.g. qwen3:14b; its address and model are set in Settings
+          (OLLAMA_URL and OLLAMA_MODEL in .env are the defaults)
 
 Every feature takes an optional engine; None means the default engine.
 All features degrade gracefully when neither is available — the UI hides them."""
@@ -27,26 +28,80 @@ class AIError(Exception):
     pass
 
 
+# ---------- local model settings ----------
+# Set in the app (Settings → Local model) and stored in the database; .env values are the defaults.
+_local_cfg: dict | None = None
+
+
+def _load_local_cfg() -> dict:
+    global _local_cfg
+    if _local_cfg is None:
+        cfg = {}
+        try:
+            from .db import AppSetting, SessionLocal
+            with SessionLocal() as s:
+                for row in s.query(AppSetting).filter(AppSetting.key.in_(("ollama_url", "ollama_model"))):
+                    cfg[row.key] = row.value or ""
+        except Exception:  # table not there yet (first start): use the defaults, look again next time
+            return cfg
+        _local_cfg = cfg
+    return _local_cfg
+
+
+def ollama_url() -> str:
+    return (_load_local_cfg().get("ollama_url") or config.OLLAMA_URL or "").strip()
+
+
+def ollama_model() -> str:
+    return (_load_local_cfg().get("ollama_model") or config.OLLAMA_MODEL or "").strip()
+
+
+def save_local_settings(url: str, model: str) -> None:
+    """Empty values go back to the .env defaults."""
+    global _local_cfg
+    from .db import AppSetting, SessionLocal
+    with SessionLocal() as s:
+        for key, val in (("ollama_url", url.strip().rstrip("/")), ("ollama_model", model.strip())):
+            row = s.get(AppSetting, key)
+            if val:
+                if row:
+                    row.value = val
+                else:
+                    s.add(AppSetting(key=key, value=val))
+            elif row:
+                s.delete(row)
+        s.commit()
+    _local_cfg = None
+    _local_cache.update(at=0.0, status=None)
+
+
+def ollama_models(url: str | None = None) -> list[str]:
+    """Models installed in Ollama at url (or the saved address), for the picker in Settings."""
+    r = httpx.get((url or ollama_url()).rstrip("/") + "/api/tags", timeout=httpx.Timeout(3.0))
+    r.raise_for_status()
+    return sorted(m.get("name", "") for m in r.json().get("models", []) if m.get("name"))
+
+
 # ---------- availability ----------
 
 def local_status(force: bool = False) -> dict:
     """{'ok': bool, 'model': str, 'reason': str}. Cached for a minute so page
     loads don't wait on Ollama."""
-    if not config.OLLAMA_URL:
-        return {"ok": False, "model": config.OLLAMA_MODEL, "reason": "OLLAMA_URL isn't set."}
+    if not ollama_url():
+        return {"ok": False, "model": ollama_model(), "reason": "No local model address is set. Add it in Settings."}
     if not force and _local_cache["status"] and time.time() - _local_cache["at"] < 60:
         return _local_cache["status"]
-    st = {"ok": False, "model": config.OLLAMA_MODEL, "reason": ""}
+    st = {"ok": False, "model": ollama_model(), "reason": ""}
     try:
-        r = httpx.get(config.OLLAMA_URL.rstrip("/") + "/api/tags", timeout=httpx.Timeout(2.0))
+        r = httpx.get(ollama_url().rstrip("/") + "/api/tags", timeout=httpx.Timeout(2.0))
         names = {m.get("name", "") for m in r.json().get("models", [])}
-        want = config.OLLAMA_MODEL
+        want = ollama_model()
         if want in names or f"{want}:latest" in names or any(n.split(":")[0] == want for n in names):
             st["ok"] = True
         else:
             st["reason"] = f"Ollama is running but doesn't have {want}. Run: ollama pull {want}"
     except Exception as e:
-        st["reason"] = f"Couldn't reach Ollama at {config.OLLAMA_URL} ({e.__class__.__name__})."
+        st["reason"] = f"Couldn't reach Ollama at {ollama_url()} ({e.__class__.__name__})."
     _local_cache.update(at=time.time(), status=st)
     return st
 
@@ -78,7 +133,7 @@ def engines() -> dict:
                    "model": config.CLAUDE_MODEL,
                    "models": [{"id": k, **v} for k, v in config.CLAUDE_MODELS.items()],
                    "reason": "" if config.ANTHROPIC_API_KEY else "ANTHROPIC_API_KEY isn't set."},
-        "local": {"available": loc["ok"], "label": "Local", "model": config.OLLAMA_MODEL, "reason": loc["reason"]},
+        "local": {"available": loc["ok"], "label": "Local", "model": ollama_model(), "url": ollama_url(), "reason": loc["reason"]},
         "default": default_engine(),
     }
 
@@ -88,7 +143,7 @@ def resolve(engine: str | None) -> str:
     if engine in (None, "", "default"):
         e = default_engine()
         if not e:
-            raise AIError("AI features are off. Add ANTHROPIC_API_KEY, or set up Ollama, in your .env.")
+            raise AIError("AI features are off. Add ANTHROPIC_API_KEY to your .env, or set up a local model in Settings.")
         return e
     if engine not in ENGINES:
         raise AIError(f"Unknown AI engine: {engine}")
@@ -118,7 +173,7 @@ def claude_model_name(model: str | None = None) -> str:
 
 
 def label(engine: str) -> str:
-    return f"Claude {claude_model_name()}" if engine == "claude" else f"Local ({config.OLLAMA_MODEL})"
+    return f"Claude {claude_model_name()}" if engine == "claude" else f"Local ({ollama_model()})"
 
 
 # ---------- calls ----------
@@ -172,7 +227,7 @@ LOCAL_MIN_PREDICT = 8192
 
 def _ask_local(system: str, user: str, max_tokens: int, json_mode: bool) -> str:
     body = {
-        "model": config.OLLAMA_MODEL,
+        "model": ollama_model(),
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
         "stream": False,
         "think": False,  # qwen3 and other reasoning models: answer directly
@@ -182,7 +237,7 @@ def _ask_local(system: str, user: str, max_tokens: int, json_mode: bool) -> str:
     }
     if json_mode:
         body["format"] = "json"
-    url = config.OLLAMA_URL.rstrip("/") + "/api/chat"
+    url = ollama_url().rstrip("/") + "/api/chat"
     timeout = httpx.Timeout(config.OLLAMA_TIMEOUT, connect=5.0)
     try:
         r = httpx.post(url, json=body, timeout=timeout)
@@ -192,7 +247,7 @@ def _ask_local(system: str, user: str, max_tokens: int, json_mode: bool) -> str:
         r.raise_for_status()
         data = r.json()
         text = (data.get("message") or {}).get("content", "")
-        log.info("local model %s: stopped=%s, tokens in=%s out=%s, %d chars", config.OLLAMA_MODEL, data.get("done_reason"),
+        log.info("local model %s: stopped=%s, tokens in=%s out=%s, %d chars", ollama_model(), data.get("done_reason"),
                  data.get("prompt_eval_count", "?"), data.get("eval_count", "?"), len(text))
         if data.get("done_reason") == "length":
             raise AIError("The local model's answer was cut off before it finished. Try again, or use Claude.")
