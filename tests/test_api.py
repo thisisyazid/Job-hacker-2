@@ -734,3 +734,29 @@ def test_local_model_settings_saved_in_app(c, monkeypatch):
     # empty values go back to the .env defaults
     r = c.put("/api/local-model", json={"url": "", "model": ""}).json()
     assert r["url"] == r["default_url"] and r["model"] == r["default_model"]
+
+
+def test_nightly_fit_checks_new_jobs(c):
+    base = c.patch("/api/nightly", json={"fit_new": True}).json()
+    assert base["settings"]["fit_new"] is True
+    before = base["pending"]["fit_new"]
+    c.post("/api/jobs", json={"title": "Fresh import", "description": "Desc", "url": "https://example.com/fresh-1"})
+    c.post("/api/jobs", json={"title": "No description yet", "url": "https://example.com/fresh-2"})
+    p = c.get("/api/nightly").json()["pending"]
+    assert p["fit_new"] == before + 1 and p["all_jobs"] >= p["jobs"] + 1
+    off = c.patch("/api/nightly", json={"fit_new": False}).json()["pending"]
+    assert off["fit_new"] == 0
+
+
+def test_linkedin_helper(c, monkeypatch):
+    from app import ai
+    seen = {}
+    def fake(system, user, **k):
+        seen["system"], seen["user"] = system, user
+        return "HEADLINE OPTIONS\n- **Scrum Master** | Agile Coach\n\nABOUT SECTION\nI help teams."
+    monkeypatch.setattr(ai, "_ask", fake)
+    monkeypatch.setattr(ai, "resolve", lambda e: "claude")
+    r = c.post("/api/linkedin-help", json={"target": "Scrum Master", "profile": "Old headline"}).json()
+    assert r["text"].startswith("HEADLINE OPTIONS") and "**" not in r["text"]
+    assert "TARGET ROLES: Scrum Master" in seen["user"] and "Old headline" in seen["user"]
+    assert "never invent" in seen["system"]

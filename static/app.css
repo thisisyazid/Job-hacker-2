@@ -727,3 +727,12 @@ body.no-credit .credit { display: none; }
 .lm-status.ok::before { background: var(--fit-high); }
 .lm-row { display: flex; gap: 8px; }
 .lm-row input { flex: 1; min-width: 0; }
+.fit-new { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 17px; min-height: 40px; margin: 0; }
+.fit-new input { width: 20px; height: 20px; accent-color: var(--accent); }
+.fit-new + .hint { margin: 0 0 14px 28px; }
+
+/* ---------- Settings: browser button and LinkedIn helper ---------- */
+.bookmarklet { display: inline-block; padding: 6px 14px; border-radius: 999px; background: var(--accent); color: var(--accent-ink) !important; font-weight: 700; text-decoration: none; cursor: grab; white-space: nowrap; }
+.linkbtn { background: none; border: 0; padding: 0; color: var(--accent); text-decoration: underline; font: inherit; cursor: pointer; }
+.li-result { margin-top: 14px; }
+.li-result .doc-text { white-space: pre-wrap; }

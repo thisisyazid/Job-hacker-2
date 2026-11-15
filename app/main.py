@@ -236,6 +236,7 @@ class NightlyIn(BaseModel):
     do_resume: Optional[bool] = None
     do_fit: Optional[bool] = None
     do_cover: Optional[bool] = None
+    fit_new: Optional[bool] = None
     max_jobs: Optional[int] = Field(default=None, ge=1, le=2000)
     stop_at: Optional[str] = Field(default=None, pattern=r"^(([01]\d|2[0-3]):[0-5]\d)?$")
     claude_model: Optional[str] = None
@@ -808,7 +809,7 @@ def _nightly_out(db: Session, user: User) -> dict:
     runs = db.query(NightlyRun).filter(NightlyRun.user_id == user.id).order_by(NightlyRun.id.desc()).limit(5).all()
     return {
         "settings": {k: getattr(s, k) for k in ("enabled", "run_time", "engine", "do_resume", "do_fit", "do_cover",
-                                                         "max_jobs", "stop_at", "claude_model")},
+                                                         "fit_new", "max_jobs", "stop_at", "claude_model")},
         "timezone": config.TIMEZONE,
         "running": nightly.is_running(),
         "pending": nightly.summary(db, user.id, s),
@@ -869,6 +870,25 @@ def queue_jobs(body: QueueIn, user: User = Depends(current_user), db: Session = 
 def stop_nightly():
     nightly.request_stop()
     return {"ok": True}
+
+class LinkedInIn(BaseModel):
+    profile: str = Field(default="", max_length=20000)
+    target: str = Field(default="", max_length=500)
+    engine: Optional[str] = None
+
+
+@app.post("/api/linkedin-help")
+def linkedin_help(body: LinkedInIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Suggestions for the LinkedIn headline, About section and skills, from the resume."""
+    p = default_persona(db, user)
+    eng = _engine_or_400(body.engine)
+    try:
+        text = ai.linkedin_help(p.resume_text if p else "", body.profile, body.target, user.preferences, engine=eng)
+    except ai.AIError as e:
+        raise HTTPException(502, str(e))
+    log.info("LinkedIn suggestions by %s: %d words", ai.label(eng), len(text.split()))
+    return {"text": text, "engine": ai.label(eng)}
+
 
 @app.post("/api/jobs/{job_id}/fit")
 def check_fit(job_id: int, body: Optional[EngineIn] = None, user: User = Depends(current_user),

@@ -300,8 +300,10 @@ function aiWait(title, detail, typical, who = "Claude", slowAfter = 90) {
     clock.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
     if (s >= slowAfter) slow.hidden = false;
   }, 250);
-  requestAnimationFrame(() => el.classList.add("show"));
+  let done = false;
+  requestAnimationFrame(() => { if (!done) el.classList.add("show"); });  // not if the request already finished
   return () => {
+    done = true;
     clearInterval(timer);
     document.body.classList.remove("waiting");
     el.classList.remove("show");
@@ -441,6 +443,13 @@ async function fillJobs(ids, intro = "") {
 // ---------- AI engine choice (Claude or the local Ollama model) ----------
 
 function engines() { return state.session?.engines || {}; }
+
+// A bookmark that sends the current page (link plus text) to Job Hacker's Add screen.
+function bookmarklet(origin) {
+  const js = `(()=>{const t=(String(getSelection())||document.body.innerText||"").replace(/\\n{3,}/g,"\\n\\n").slice(0,20000);` +
+    `window.open(${JSON.stringify(origin + "/#/add?url=")}+encodeURIComponent(location.href)+"&text="+encodeURIComponent(t),"_blank")})()`;
+  return "javascript:" + encodeURIComponent(js);
+}
 
 // Settings → Local model: where Ollama runs and which model to use (stored in the app, not .env).
 async function drawLocalModel(box, checkUrl) {
@@ -1330,8 +1339,12 @@ function rowHtml(j) {
 
 const EMPTY = { title: "", company: "", location: "", salary: "", employment_type: "", posted_date: "", description: "", url: "", referred_by: "" };
 
+// Page text sent by the "Save to Job Hacker" browser button, used if the link can't be read.
+let addPrefill = null;
+
 function renderAdd(params) {
   const url = params.get("url") || "";
+  addPrefill = params.get("text") ? { url, text: params.get("text") } : null;
   const mode = params.get("mode") || (url ? "link" : "link");
   setView(html`
     <div>
@@ -1375,11 +1388,12 @@ function showMode(mode, { url = "", auto = false, note = "" } = {}) {
     else form.url.focus();
   } else if (mode === "paste") {
     body.innerHTML = html`
-      ${note ? raw(html`<div class="callout"><p>${note}</p><p>Open the posting, select all the text, copy it, and paste it below.</p></div>`) : ""}
+      ${note && !(addPrefill && addPrefill.url === url) ? raw(html`<div class="callout"><p>${note}</p><p>Open the posting, select all the text, copy it, and paste it below.</p></div>`) : ""}
+      ${addPrefill && addPrefill.url === url ? raw(html`<div class="callout info"><p>${note ? `${note} ` : ""}The page text from your browser is filled in below. Check it's the job post, then continue.</p></div>`) : ""}
       <form id="f-paste">
         <div class="field">
           <label for="t">Job post</label>
-          <textarea id="t" name="text" class="tall" placeholder="Paste everything from the posting: title, company, description…" required></textarea>
+          <textarea id="t" name="text" class="tall" placeholder="Paste everything from the posting: title, company, description…" required>${addPrefill && addPrefill.url === url ? addPrefill.text : ""}</textarea>
         </div>
         <div class="field">
           <label for="pu">Link to the posting <span class="hint" style="display:inline">(optional)</span></label>
@@ -2022,6 +2036,22 @@ async function renderSettings(params) {
         ${s.users.length > 1 ? raw('<button class="btn btn-ghost btn-danger" id="del-user">Delete this profile</button>') : ""}
       </div>
 
+      ${state.session.ai_enabled ? raw(html`<h2 id="h-linkedin">LinkedIn profile helper</h2>
+      <p class="lead">Recruiters search LinkedIn by job title and skills. Get headline options, a rewritten About section and the skills to list, built from your base resume.</p>
+      <form id="li-form">
+        <div class="field"><label for="li-target">Roles you're targeting</label>
+          <input id="li-target" type="text" value="${localGet("jh.liTarget") || ""}" placeholder="e.g. Scrum Master, Agile Coach, Business Analyst"></div>
+        <div class="field"><label for="li-profile">Your current headline and About section <span class="hint" style="display:inline">(optional)</span></label>
+          <textarea id="li-profile" rows="5" placeholder="Copy them from your LinkedIn profile and paste here.">${localGet("jh.liProfile") || ""}</textarea></div>
+        ${raw(enginePicker())}
+        <button class="btn btn-primary" type="submit">Suggest improvements</button>
+      </form>
+      <div id="li-out"></div>`) : ""}
+
+      <h2 id="h-browser">Save jobs from your browser</h2>
+      <p class="lead">Drag this button to your browser's bookmarks bar: <a class="bookmarklet" href="${bookmarklet(origin)}" title="Drag me to your bookmarks bar">＋ Save to Job Hacker</a></p>
+      <p class="hint">Then, on any job page (LinkedIn, JobStreet, MyCareersFuture, a company site), click it in your bookmarks bar. Job Hacker opens and reads the job. If the site won't share its details, the page text is sent along so nothing needs copying. Select part of the page first to send just that part. Can't drag? <button class="linkbtn" type="button" id="bm-copy">Copy the bookmark code</button>, make a new bookmark and paste it as the address.</p>
+
       <h2>Use it from your phone</h2>
       <p class="lead">Open this site on your phone, then use <strong>Add to Home Screen</strong>. On Android, Job Hacker then appears in the share menu: share a job from LinkedIn or Chrome and it opens ready to save.</p>
       <p class="lead">On iPhone, make a Shortcut that opens <code>${origin}/?add=</code> followed by the shared URL, and turn on “Show in Share Sheet”.</p>
@@ -2058,6 +2088,34 @@ async function renderSettings(params) {
   drawNightly(document.getElementById("nightly"));
   drawLogs(document.getElementById("logs"));
   drawLocalModel(document.getElementById("local-model"));
+  const liForm = document.getElementById("li-form");
+  if (liForm) {
+    bindEnginePickers(liForm);
+    liForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const target = liForm.querySelector("#li-target").value.trim(), profile = liForm.querySelector("#li-profile").value.trim();
+      localSet("jh.liTarget", target); localSet("jh.liProfile", profile);
+      const done = busy(e.submitter, "Writing");
+      try {
+        const r = await withAI({ title: "Improving your LinkedIn profile", detail: (W) => `${W} is writing headline options, an About section and skills from your resume.`,
+          typical: { claude: "20–60 seconds", local: "1–3 minutes" } }, () => api("/linkedin-help", { json: { target, profile, engine: currentEngine() } }));
+        const out = document.getElementById("li-out");
+        out.innerHTML = html`<div class="li-result"><p class="hint">By ${r.engine}. Check every line before you use it.</p>
+          <div class="doc-text">${r.text}</div>
+          <div class="row"><button class="btn btn-primary" type="button" id="li-copy">Copy all</button></div></div>`;
+        out.querySelector("#li-copy").addEventListener("click", async () => {
+          try { await navigator.clipboard.writeText(r.text); toast("Copied"); } catch { toast("Couldn't copy. Select the text instead.", "error"); }
+        });
+        out.scrollIntoView({ block: "start", behavior: "smooth" });
+      } catch (err) { toast(err.message, "error"); }
+      done();
+    });
+  }
+  document.querySelector(".bookmarklet")?.addEventListener("click", (e) => { e.preventDefault(); toast("Drag this button to your bookmarks bar, then click it on a job page."); });
+  document.getElementById("bm-copy")?.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(decodeURIComponent(bookmarklet(origin))); toast("Copied. Make a new bookmark and paste this as its address."); }
+    catch { toast("Couldn't copy here.", "error"); }
+  });
   document.getElementById("ai-ask")?.addEventListener("change", (e) => {
     localSet("jh.aiNoAsk", e.target.checked ? "" : "1");
     toast(e.target.checked ? "You'll be asked which AI to use when adding jobs" : "Adding jobs will use your last choice without asking");
@@ -2188,6 +2246,8 @@ async function drawNightly(box) {
         <label><input type="checkbox" data-opt="do_fit" ${st.do_fit ? "checked" : ""}> Fit checks</label>
         <label><input type="checkbox" data-opt="do_cover" ${st.do_cover ? "checked" : ""}> Cover letters</label>
       </fieldset>
+      <label class="fit-new"><input type="checkbox" data-opt="fit_new" ${st.fit_new ? "checked" : ""}> Also fit-check new jobs</label>
+      <p class="hint">Scores jobs saved in the last few days that don't have a score yet (for example from a CSV or Apify import), whether or not they're on tonight's list. Next morning, sort the job list by Fit to see the best matches first.${st.engine === "claude" ? " With Claude this uses tokens for every job, so the local model is the cheaper choice." : ""}</p>
       <h3 class="pick-h">Tonight's list</h3>
       <p class="pick-sum" id="n-sum">${raw(pendingText(p))}</p>
       <p><a href="#/" id="n-pick">Pick jobs on the job list</a>: tick the Tonight column, and sort or filter by it.</p>
@@ -2195,7 +2255,7 @@ async function drawNightly(box) {
       <div class="actions">
         ${n.running
           ? raw('<button class="btn" id="n-stop">Stop the run</button>')
-          : raw(html`<button class="btn" id="n-run" ${p.jobs ? "" : "disabled"}>Run the list now</button>`)}
+          : raw(html`<button class="btn" id="n-run" ${p.all_jobs ?? p.jobs ? "" : "disabled"}>Run the list now</button>`)}
       </div>
     </div>
     ${last ? raw(runHtml(last, n.running)) : ""}
@@ -2229,7 +2289,8 @@ async function drawNightly(box) {
 }
 
 function pendingText(p) {
-  if (!p.queued) return "Empty. Tick jobs in the Tonight column on the job list, or use “Add to tonight's list” on a job.";
+  const fresh = p.fit_new ? esc(` Plus fit checks for ${p.fit_new} new job${p.fit_new === 1 ? "" : "s"}.`) : "";
+  if (!p.queued) return (p.fit_new ? esc(`Nothing picked. The next run fit-checks ${p.fit_new} new job${p.fit_new === 1 ? "" : "s"}.`) : "Empty. Tick jobs in the Tonight column on the job list, or use “Add to tonight's list” on a job.");
   const parts = [p.resume && `${p.resume} resume${p.resume === 1 ? "" : "s"}`, p.fit && `${p.fit} fit check${p.fit === 1 ? "" : "s"}`,
     p.cover_letter && `${p.cover_letter} cover letter${p.cover_letter === 1 ? "" : "s"}`].filter(Boolean);
   const capped = p.limit && p.ready > p.jobs;
@@ -2237,8 +2298,8 @@ function pendingText(p) {
   return esc(`${p.queued} job${p.queued === 1 ? "" : "s"} picked. `) +
     (parts.length
       ? (capped ? esc(`Each run does up to ${p.limit} jobs, so the next run makes `) : "") + `<strong>${esc(parts.join(", "))}</strong>` +
-        (capped ? esc(`. The other ${p.ready - p.jobs} wait for later runs (about ${nights - 1} more night${nights - 1 === 1 ? "" : "s"}); raise “Jobs per night” in Settings to do more at once.`) : esc(" to make."))
-      : esc("Nothing to make: turn on resumes, fit checks or cover letters above."));
+        (capped ? esc(`. The other ${p.ready - p.jobs} wait for later runs (about ${nights - 1} more night${nights - 1 === 1 ? "" : "s"}); raise “Jobs per night” in Settings to do more at once.`) : esc(" to make.")) + fresh
+      : esc("Nothing to make: turn on resumes, fit checks or cover letters above.") + fresh);
 }
 
 function runHtml(r, running, compact = false) {
