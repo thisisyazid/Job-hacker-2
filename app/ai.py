@@ -582,6 +582,48 @@ def tailor_resume(resume: str, job, extra: str = "", engine: str | None = None) 
     return sort_experience(out)
 
 
+LINKEDIN_SYSTEM = """You are a LinkedIn profile coach who also knows how recruiters search LinkedIn.
+You get the candidate's resume, their current LinkedIn headline and About section, and the roles they
+are targeting. Recruiters find people by searching job titles and skills, and the headline is the
+most searched and most seen line, so it must carry the target titles and key skills.
+
+Write plain text with exactly these headings, each on its own line:
+
+HEADLINE OPTIONS
+Three headlines of at most 220 characters each, one per line starting with "- ". Lead with the target
+job titles the candidate can truthfully claim, then two or three searchable skills or domains, then
+one concrete proof point (a result, sector or certification) from the resume.
+
+ABOUT SECTION
+A rewritten About section of 150–250 words in first person, short paragraphs: who they are and the
+roles they want, two or three concrete results from the resume with their numbers, what they're
+known for, and a last line inviting people to get in touch. Work the target titles and key skills in
+naturally.
+
+SKILLS TO LIST
+Up to 15 skills, one per line starting with "- ", in the words recruiters search for, each backed by
+the resume. Most important first (LinkedIn shows the top few).
+
+QUICK FIXES
+Three to five specific changes to make, one per line starting with "- ", e.g. a stronger first line,
+a missing keyword, the "Open to work" job titles to set, a featured project to add.
+
+Rules: use only facts from the resume and current profile; never invent titles, employers, numbers or
+skills. No stock phrases (results-driven, passionate, dynamic, guru, ninja, proven track record).
+No Markdown symbols other than "- " bullets. Output only the four sections."""
+
+
+def linkedin_help(resume: str, profile: str, target: str, preferences: str = "", engine: str | None = None) -> str:
+    if not resume.strip() and not profile.strip():
+        raise AIError("Add your base resume in Settings, or paste your current LinkedIn profile text.")
+    user = (f"TARGET ROLES: {target.strip() or '(not given: infer them from the resume and preferences)'}\n\n"
+            f"WHAT THE CANDIDATE WANTS:\n{preferences.strip() or '(not specified)'}\n\n"
+            f"CURRENT LINKEDIN HEADLINE AND ABOUT:\n{profile.strip() or '(not provided)'}\n\n"
+            f"RESUME:\n{resume.strip() or '(not provided)'}")
+    out = _ask(LINKEDIN_SYSTEM, user, max_tokens=2500, engine=engine)
+    return re.sub(r"\*\*(.+?)\*\*", r"\1", out).strip()
+
+
 def cover_letter(resume: str, job, extra: str = "", engine: str | None = None) -> str:
     if not resume.strip():
         raise AIError("Add your base resume in Settings first.")

@@ -77,6 +77,16 @@ def plan(db, user_id: int, s: NightlySetting) -> list[tuple[Job, str]]:
                 break
             seen.append(j.id)
         keep.append((j, t))
+    if s.fit_new:
+        # newly saved jobs (CSV/Apify imports and the like) get a fit check too, newest first,
+        # so sorting by Fit the next morning shows the best matches
+        since = now() - dt.timedelta(days=config.NIGHTLY_FIT_NEW_DAYS)
+        have = {j.id for j, t in keep if t == "fit"}
+        new = (db.query(Job)
+               .filter(Job.user_id == user_id, Job.archived_at.is_(None), Job.fit_score.is_(None),
+                       Job.status.in_(("saved", "referral")), Job.created_at >= since, Job.description != "")
+               .order_by(Job.created_at.desc()).limit(config.NIGHTLY_FIT_NEW_MAX).all())
+        keep += [(j, "fit") for j in new if j.id not in have and (j.description or "").strip()]
     return keep
 
 
@@ -89,9 +99,11 @@ def summary(db, user_id: int, s: NightlySetting) -> dict:
                                       Job.description != "").count(),
         "limit": s.max_jobs or config.NIGHTLY_MAX_JOBS,
         "stop_at": s.stop_at or "",
-        "jobs": len({j.id for j, _ in p}),
+        "jobs": len({j.id for j, _ in p if j.queued}),  # picked jobs the next run works on
+        "all_jobs": len({j.id for j, _ in p}),  # including new jobs getting a fit check
         "resume": sum(t == "resume" for _, t in p),
-        "fit": sum(t == "fit" for _, t in p),
+        "fit": sum(t == "fit" and j.queued for j, t in p),
+        "fit_new": sum(t == "fit" and not j.queued for j, t in p),
         "cover_letter": sum(t == "cover_letter" for _, t in p),
     }
 

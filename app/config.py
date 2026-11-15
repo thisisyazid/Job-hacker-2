@@ -22,7 +22,7 @@ API_TOKEN = os.environ.get("API_TOKEN", "")
 
 # AI features (extraction from pasted text, fit score, resume, cover letter)
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-APP_VERSION = "1.12.0"  # shown in Settings and the log, to tell which build is running
+APP_VERSION = "1.13.0"  # shown in Settings and the log, to tell which build is running
 
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5-5")
 # Claude models you can pick in the app (id: name, price per million tokens in/out).
@@ -44,5 +44,8 @@ DEFAULT_ENGINE = os.environ.get("DEFAULT_ENGINE", "claude")  # claude | local
 TIMEZONE = os.environ.get("TZ_NAME", os.environ.get("TZ", "Asia/Singapore"))
 NIGHTLY_SCHEDULER = os.environ.get("NIGHTLY_SCHEDULER", "1") not in ("0", "false", "no")
 NIGHTLY_MAX_JOBS = int(os.environ.get("NIGHTLY_MAX_JOBS", "40"))
+# "Fit-check new jobs" overnight: jobs saved in the last few days without a score, up to this many a night
+NIGHTLY_FIT_NEW_DAYS = int(os.environ.get("NIGHTLY_FIT_NEW_DAYS", "3"))
+NIGHTLY_FIT_NEW_MAX = int(os.environ.get("NIGHTLY_FIT_NEW_MAX", "100"))
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
