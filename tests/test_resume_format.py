@@ -163,3 +163,22 @@ def test_resume_prompt_uses_fit_keywords(monkeypatch):
     ai.tailor_resume("Jane Tan\nScrum Master", {"title": "BA", "description": "d"}, engine="local")
     assert "KEYWORDS FROM THE POSTING" not in prompts[0][1]
     assert ai.fit_hints({"fit": {"keywords": ["a", " ", "b"]}}) == {"keywords": ["a", "b"], "gaps": []}
+
+
+def test_thin_resume_gets_one_repair_retry(monkeypatch):
+    from app import ai
+    from app.resume_format import missing_numbers, too_thin
+    bullets = "\n".join(f"- Led delivery work item {i} across business, technology and operations teams, keeping stakeholders aligned on scope." for i in range(25))
+    base = ("Jane Tan\njane@example.com\nSCRUM MASTER\nPROFESSIONAL EXPERIENCE\nScrum Master, Citibank | June 2022 – October 2023\n"
+            "- Cut processing time by 40% and raised reporting consistency by 30%.\n" + bullets)
+    thin = "# Jane Tan\n\n## Professional Experience\n### Citibank | June 2022 – October 2023\n- Led delivery.\n"
+    full = "# Jane Tan\n\n## Professional Experience\n### Citibank | June 2022 – October 2023\n- Cut processing time by 40% and raised reporting consistency by 30%.\n" + bullets
+    assert too_thin(base, thin) and not too_thin(base, full)
+    assert missing_numbers(base, thin) == ["40%", "30%"] and missing_numbers(base, full) == []
+    prompts = []
+    answers = iter([thin, full])
+    monkeypatch.setattr(ai, "_ask", lambda system, user, **k: prompts.append(user) or next(answers))
+    out = ai.tailor_resume(base, {"title": "Scrum Master", "description": "d"}, engine="local")
+    assert "40%" in out and len(prompts) == 2
+    assert "much shorter than the base resume" in prompts[1] and "40%, 30%" in prompts[1]
+    assert "DEPTH" in ai.RESUME_SYSTEM
