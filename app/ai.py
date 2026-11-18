@@ -394,16 +394,25 @@ Truth (these override everything else):
 - ROLE ORDER IS FIXED: list every role in reverse chronological order (most recent first), with the
   same companies, titles and dates as the base resume. Never move a role up or down because it is
   more relevant, and never drop a role, including short, fixed-term or contract roles and the most
-  recent one. Older roles may be shortened to 1–2 bullets.
+  recent one.
+- DEPTH: a tailored resume is as substantial as the base resume, not a summary of it. For every role
+  that ended in the last ten years, keep as many bullets as the base resume has for it (at least
+  three where it has three or more), rewritten for this job. Keep every number and result in the base
+  resume (percentages, counts, money, time saved). Only roles that ended more than ten years ago may
+  drop to one or two bullets.
 - KEEP EVERY SECTION of the base resume. Sections beyond the ones above (projects, independent or
   side projects, portfolio, volunteering, publications, awards, languages and the like) stay, with
-  their own heading and in the same place as in the base resume; the "Independent Projects" block
-  above shows the format. Keep every project; you may trim and reword its bullets for this role.
+  their own heading; the "Independent Projects" block above shows the format. Keep every project.
+  If the job is mainly about building software or products, keep projects where the base resume has
+  them, in full. Otherwise put Independent Projects after Professional Experience and keep each project
+  to its name, the short description and one bullet, so the work experience leads.
 
 Keywords (for the ATS):
 - Use the posting's exact wording for each requirement the candidate meets ("stakeholder
   management", not a synonym). Write a term in full with its acronym once, e.g. "Certified
   ScrumMaster (CSM)", "Business Process Model and Notation (BPMN)".
+- Core Capabilities: five or six groups, each named in your own words (never copy the posting's
+  section headings as group names), each item backed by the resume.
 - Put the matched hard skills in Core Capabilities, and also show each important one in use in a
   bullet. Use a key term two or three times across the resume at most; never list keywords on
   their own or repeat them to pad.
@@ -536,7 +545,8 @@ def fit_hints(job) -> dict:
 def tailor_resume(resume: str, job, extra: str = "", engine: str | None = None) -> str:
     if not resume.strip():
         raise AIError("Add your base resume in Settings first.")
-    from .resume_format import base_roles, extra_sections, missing_roles, missing_sections, sort_experience
+    from .resume_format import (base_roles, extra_sections, missing_numbers, missing_roles, missing_sections,
+                                sort_experience, too_thin)
     roles = base_roles(resume)
     extras = extra_sections(resume)
     user = f"BASE RESUME:\n{resume}\n\nTARGET JOB:\n{_job_block(job)}"
@@ -561,24 +571,37 @@ def tailor_resume(resume: str, job, extra: str = "", engine: str | None = None) 
         out = _ask(RESUME_SYSTEM, prompt, max_tokens=4000, engine=engine)
         return re.sub(r"^```(?:markdown|md)?\s*|\s*```$", "", out.strip())
 
+    def issues(text: str) -> list[str]:
+        """What a draft lost from the base resume, as lines for a repair request."""
+        out_issues = []
+        gone = missing_sections(extras, text)
+        if gone:
+            out_issues.append("It left out these sections of the base resume. Include each one, with its heading "
+                              "and all its items:\n" + "\n".join(f"- {x}" for x in gone))
+        lost = missing_roles(roles, text)
+        if lost:
+            out_issues.append("It left out these roles. Include every one of them, with its company, title and "
+                              "dates, in date order:\n" + "\n".join(f"- {r}" for r in lost))
+        if too_thin(resume, text):
+            out_issues.append("It is much shorter than the base resume. Keep the base resume's bullets for every "
+                              "recent role, rewritten for this job, rather than summarising them.")
+        nums = missing_numbers(resume, text)
+        if len(nums) >= 2 or (nums and out_issues):  # one dropped number alone isn't worth a retry
+            out_issues.append("It dropped these results from the base resume. Put each back in the bullet it "
+                              "belongs to: " + ", ".join(nums))
+        return out_issues
+
     out = ask(user)
-    gone = missing_sections(extras, out)
-    if gone:
-        log.warning("tailored resume left out section(s): %s; asking again", "; ".join(gone))
-        retry = ask(user + "\n\nIMPORTANT: a previous draft left out these sections of the base resume. "
-                    "Include each one, with its heading and all its items:\n" + "\n".join(f"- {s}" for s in gone))
-        if len(missing_sections(extras, retry)) < len(gone) and not missing_roles(roles, retry):
+    found = issues(out)
+    if found:
+        log.warning("tailored resume needs repair (%d issue(s)): %s; asking again", len(found),
+                    " | ".join(f.split(".")[0] for f in found))
+        retry = ask(user + "\n\nIMPORTANT: a previous draft had problems.\n" + "\n".join(f"- {f}" for f in found))
+        again = issues(retry)
+        if len(again) < len(found) and not missing_roles(roles, retry):
             out = retry
-    lost = missing_roles(roles, out)
-    if lost:
-        log.warning("tailored resume left out %d role(s): %s; asking again", len(lost), "; ".join(lost))
-        retry = ask(user + "\n\nIMPORTANT: a previous draft left out these roles. Include every one of them, "
-                    "with its company, title and dates, in date order:\n" + "\n".join(f"- {r}" for r in lost))
-        still = missing_roles(roles, retry)
-        if len(still) < len(lost):
-            out = retry
-        if still:
-            log.warning("tailored resume still leaves out: %s", "; ".join(still))
+        if again:
+            log.warning("tailored resume still has: %s", " | ".join(f.split(".")[0] for f in again))
     return sort_experience(out)
 
 

@@ -88,6 +88,31 @@ def missing_sections(extras: list[str], md: str) -> list[str]:
     return [s for s in extras if not set(SECTION_WORD.findall(s.lower())) & have]
 
 
+# Results worth keeping: "40%", "3 million", "US$1", "$2.5m", "15x".
+NUMBER = re.compile(r"(?:US)?\$\s?\d[\d,.]*\s?(?:[mk]\b|million|billion)?|\b\d+(?:\.\d+)?\s?(?:%|x\b|million\b|billion\b)", re.I)
+
+
+def missing_numbers(base: str, md: str) -> list[str]:
+    """Results (percentages, money, millions) in the base resume that the tailored one dropped."""
+    norm = lambda x: re.sub(r"\s+", "", x.lower())
+    have = {norm(m) for m in NUMBER.findall(md)}
+    out = []
+    for m in NUMBER.findall(base):
+        if norm(m) not in have and m.strip() not in out:
+            out.append(m.strip())
+    return out
+
+
+def _words(text: str) -> int:
+    return len(re.findall(r"[A-Za-z][A-Za-z'’-]+", text))
+
+
+def too_thin(base: str, md: str) -> bool:
+    """A tailored resume well under the base resume's length has summarised it rather than tailored it."""
+    b = _words(base)
+    return b >= 250 and _words(md) < 0.7 * b
+
+
 def _span(text: str) -> tuple[int, int] | None:
     """(end year, start year) of a role line; 'Present' counts as 9999."""
     m = ROLE_LINE.search(text)
