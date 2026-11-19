@@ -5,6 +5,7 @@ import datetime as dt
 import io
 import json
 import re
+import threading
 import time
 from typing import Optional
 
@@ -22,7 +23,8 @@ from .db import STATUSES, Document, Job, NightlyRun, Persona, User, get_db, init
 from . import dupes
 from .docx_export import to_docx
 from .pdf_export import to_pdf
-from .scrape import ScrapeError, check_easy_apply, easy_apply_value, fetch_job, link_key, looks_like_url, normalize_url
+from .scrape import (ScrapeError, check_easy_apply, easy_apply_value, fetch_job, html_to_text, link_key, looks_like_url,
+                     normalize_url)
 
 logs.setup()
 log = logs.log
@@ -1030,9 +1032,125 @@ def _map_status(s: str | None) -> str:
     return OLD_STATUS.get((s or "").strip().lower(), "saved")
 
 
-TITLE_COLS = ("job title", "title", "name", "job name", "position", "role", "job")
+TITLE_COLS = ("job title", "title", "position name", "name", "job name", "position", "role", "job")
 COMPANY_COLS = ("company name", "company", "employer", "organisation", "organization", "hiring organization")
-URL_COLS = ("job url", "url", "link", "job link", "posting url", "job posting url", "apply url")
+URL_COLS = ("job url", "url", "link", "job link", "linked in url", "job posting url", "posting url", "apply url")
+
+
+def _words_key(k: str) -> str:
+    """jobUrl -> "job url", company_name -> "company name", "Job URL" -> "job url"."""
+    k = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", str(k))
+    return re.sub(r"[\s_\-.]+", " ", k).strip().lower()
+
+
+def _flatten_item(item: dict) -> dict:
+    """One job from a scraper (Apify and the like) as flat text columns the import understands.
+    Nested values: {"company": {"name": ...}} -> "company name"; lists are joined; epoch
+    timestamps in date fields become YYYY-MM-DD; description HTML becomes text."""
+    out: dict[str, str] = {}
+
+    def put(key: str, v):
+        if v is None or v == "" or key in out:
+            return
+        if isinstance(v, bool):
+            v = "true" if v else "false"
+        elif isinstance(v, (int, float)):
+            if re.search(r"date|posted|listed|published|time|at$", key) and v > 10**9:
+                v = dt.datetime.fromtimestamp(v / 1000 if v > 10**11 else v, dt.timezone.utc).date().isoformat()
+            else:
+                v = str(v)
+        elif isinstance(v, list):
+            v = ", ".join(str(x.get("name") or x.get("title") or "") if isinstance(x, dict) else str(x) for x in v)
+        else:
+            v = str(v)
+        out[key] = v
+
+    def walk(prefix: str, node):
+        for k, v in node.items():
+            key = (prefix + " " + _words_key(k)).strip()
+            if isinstance(v, dict):
+                walk(key, v)
+                put(key, v.get("name") or v.get("title") or v.get("text") or "")
+            else:
+                put(key, v)
+
+    if isinstance(item, dict):
+        walk("", item)
+    if not out.get("description") and out.get("description html"):
+        out["description"] = html_to_text(out["description html"])
+    # Easy Apply from scrapers that give the apply links instead of a type
+    if not any(out.get(k) for k in ("easy apply", "apply type", "apply method")):
+        if any(v for k, v in out.items() if "easy apply url" in k):
+            out["easy apply"] = "true"
+        elif any(v for k, v in out.items() if "company apply url" in k or "external apply url" in k):
+            out["easy apply"] = "false"
+    return out
+
+
+class _BackgroundFill:
+    """After an automation import, read missing descriptions from the postings (no AI),
+    one job at a time, so the jobs are ready without opening the app."""
+    lock = threading.Lock()
+
+    @classmethod
+    def start(cls, user_id: int, ids: list[int]) -> None:
+        if ids:
+            threading.Thread(target=cls._run, args=(user_id, list(ids)), daemon=True).start()
+
+    @classmethod
+    def _run(cls, user_id: int, ids: list[int]) -> None:
+        from .db import SessionLocal
+        with cls.lock:
+            done = 0
+            for jid in ids:
+                with SessionLocal() as db:
+                    j = db.get(Job, jid)
+                    if not j or j.user_id != user_id or not j.url or (j.description or "").strip():
+                        continue
+                    try:
+                        draft, method = fetch_job(j.url, allow_ai=False)
+                    except ScrapeError as e:
+                        log.info("background fill job %s (%s): %s", jid, j.url, e)
+                        continue
+                    draft = _clean_draft(draft)
+                    filled = [k for k in DETAIL_FIELDS if draft.get(k) and not (getattr(j, k) or "").strip()]
+                    for k in filled:
+                        setattr(j, k, draft[k])
+                    if j.title == PENDING_TITLE and draft.get("title"):
+                        j.title = draft["title"][:300]
+                        filled.insert(0, "title")
+                    if draft.get("easy_apply") is not None and j.easy_apply is None:
+                        j.easy_apply = draft["easy_apply"]
+                    db.commit()
+                    done += bool(filled)
+                    log.info("background fill job %s with %s: %s", jid, method, ", ".join(filled) or "nothing new")
+                time.sleep(1.5)  # gentle on the job sites
+            log.info("background fill done: %d of %d jobs filled in", done, len(ids))
+
+
+@app.post("/api/import/jobs")
+async def import_jobs(request: Request, fill: bool = True, user: User = Depends(current_user),
+                      db: Session = Depends(get_db)):
+    """For n8n and other automations (send X-API-Key): a JSON list of jobs, or {"items": [...]},
+    straight from a scraper such as Apify's LinkedIn jobs actors. Same rules as the CSV import.
+    With fill (the default), jobs without a description are read from their postings afterwards."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "Send a JSON list of jobs, or {\"items\": [...]}.")
+    items = body.get("items") if isinstance(body, dict) else body
+    if isinstance(body, dict) and items is None:
+        items = [body]
+    if not isinstance(items, list):
+        raise HTTPException(400, "Send a JSON list of jobs, or {\"items\": [...]}.")
+    if len(items) > 5000:
+        raise HTTPException(413, "At most 5000 jobs per request.")
+    rows = [_flatten_item(x) for x in items if isinstance(x, dict)]
+    log.info("automation import into profile %r: %d jobs", user.name, len(rows))
+    result = _import_rows(rows, user, db, source="automation", label="Automation import")
+    if fill:
+        _BackgroundFill.start(user.id, result["to_fill"])
+    return result
 
 
 def _csv_fail(filename: str | None, why: str):
@@ -1073,19 +1191,25 @@ def _read_csv(raw: bytes, filename: str | None) -> list[dict]:
 @app.post("/api/import/csv")
 async def import_csv(file: UploadFile = File(...), user: User = Depends(current_user), db: Session = Depends(get_db)):
     rows = _read_csv(await file.read(), file.filename)
+    log.info("CSV import into profile %r: %d rows", user.name, len(rows))
+    return _import_rows(rows, user, db, source="csv", label="CSV import", first_line=2)
 
+
+def _import_rows(rows: list[dict], user: User, db: Session, source: str, label: str, first_line: int = 1) -> dict:
+    """Shared by the CSV import and the JSON import (n8n / Apify): skips jobs already saved
+    (archived ones included), updates the posted date of reposts, flags possible duplicates
+    and reads Easy Apply."""
     def col(row, *names):
         low = {k.strip().lower(): v for k, v in row.items() if k}
         for n in names:
             if low.get(n):
-                return low[n].strip()
+                return str(low[n]).strip()
         return ""
 
-    log.info("CSV import into profile %r: %d rows", user.name, len(rows))
     EASY = ("easy apply", "easyapply", "easy_apply", "apply type", "applytype", "apply_type", "apply method",
             "applymethod", "apply_method", "application type")
     easy_marked = 0
-    POSTED = ("published at", "posted", "posted date", "date posted", "date")
+    POSTED = ("published at", "posted at", "posted", "posted date", "date posted", "listed at", "date")
 
     # A job that's reposted keeps its link, so it can appear more than once.
     # Find the newest posted date for each link across the whole file.
@@ -1107,12 +1231,13 @@ async def import_csv(file: UploadFile = File(...), user: User = Depends(current_
     added = n_dupes = invalid = dead = redated = possible = possible_archived = 0
     to_fill: list[int] = []  # new jobs with a link but no description, to read from their postings next
     redated_ids: set[int] = set()
-    for n, row in enumerate(rows, start=2):  # line 1 is the header
+    for n, row in enumerate(rows, start=first_line):  # CSV: line 1 is the header
         raw_url = col(row, *URL_COLS)
         url = normalize_url(raw_url)
         title = col(row, *TITLE_COLS)
         company = col(row, *COMPANY_COLS)
-        what = f"line {n}: {logs.short(title, 60)!r} at {logs.short(company, 40)!r} {url or '(no link)'}"
+        where = "line" if source == "csv" else "item"
+        what = f"{where} {n}: {logs.short(title, 60)!r} at {logs.short(company, 40)!r} {url or '(no link)'}"
         if not title and not url:
             invalid += 1
             log.info("  %s -> skipped, no job title and no link", what)
@@ -1147,10 +1272,13 @@ async def import_csv(file: UploadFile = File(...), user: User = Depends(current_
                          logs.short(dupe.title, 60), dupe.status, old or "(none)")
             continue
         job = Job(user_id=user.id, url=url or None, title=title,
-                   company="" if looks_like_url(company) else company, location=col(row, "location"),
+                   company="" if looks_like_url(company) else company,
+                   location=col(row, "location", "job location", "place", "formatted location"),
+                   salary=col(row, "salary", "salary info", "salary range", "compensation")[:200],
+                   employment_type=col(row, "employment type", "contract type", "job type", "work type")[:100],
                    posted_date=newest.get(url) or col(row, *POSTED),
-                   description=col(row, "description", "job description"),
-                   status=_map_status(col(row, "status")), source="csv",
+                   description=col(row, "description", "job description", "description text"),
+                   status=_map_status(col(row, "status")), source=source,
                    referred_by=col(row, "referred by", "referrer", "referral name", "referred_by")[:200],
                    easy_apply=easy_apply_value(col(row, *EASY)))
         db.add(job)
@@ -1172,7 +1300,7 @@ async def import_csv(file: UploadFile = File(...), user: User = Depends(current_
         if key:
             by_company.setdefault(key, []).append((job.id, job.title, False))
     db.commit()
-    log.info("CSV import done: %d rows, %d added, %d already saved (%d of them reposted, date updated), "
+    log.info(label + " done: %d rows, %d added, %d already saved (%d of them reposted, date updated), "
              "%d without a title, %d taken down, %d look like jobs already saved from another site (%d of those archived)",
              len(rows), added, n_dupes, redated, invalid, dead, possible, possible_archived)
     return {"rows": len(rows), "added": added, "duplicates": n_dupes, "reposted": redated, "skipped": invalid, "dead": dead,

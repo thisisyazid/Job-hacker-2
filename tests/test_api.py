@@ -792,3 +792,30 @@ def test_easy_apply_from_pages_csv_and_automations(c, monkeypatch):
         raise scrape.ScrapeError("LinkedIn is limiting requests right now.")
     monkeypatch.setattr(main, "check_easy_apply", limited)
     assert c.post(f"/api/jobs/{other['id']}/easy-apply").json()["status"] == "failed"
+
+
+def test_import_jobs_json_from_apify(c):
+    # shaped like two popular Apify LinkedIn actors' output
+    items = [
+        {"id": "4700000001", "title": "Scrum Master (Payments)", "companyName": "BCS Information Systems",
+         "jobUrl": "https://www.linkedin.com/jobs/view/scrum-master-4700000001?trk=x", "location": "Singapore",
+         "publishedAt": "2026-11-18", "description": "Facilitate Scrum ceremonies for payment teams.",
+         "contractType": "Full-time", "applyType": "EASY_APPLY", "salary": "S$8,000 - S$10,000"},
+        {"link": "https://www.linkedin.com/jobs/view/4700000002/", "title": "Agile Coach",
+         "company": {"name": "Grab"}, "postedAt": 1763424000000, "descriptionHtml": "<p>Coach <b>teams</b>.</p>",
+         "applyMethod": {"companyApplyUrl": "https://grab.careers/apply/1"}, "salaryInfo": ["S$9k", "S$12k"]},
+        {"title": "", "link": ""},  # nothing usable
+    ]
+    r = c.post("/api/import/jobs?fill=false", json={"items": items}).json()
+    assert r["rows"] == 3 and r["added"] == 2 and r["skipped"] == 1
+    jobs = {j["url"]: j for j in c.get("/api/jobs").json()}
+    a = jobs["https://www.linkedin.com/jobs/view/4700000001/"]
+    b = jobs["https://www.linkedin.com/jobs/view/4700000002/"]
+    assert a["company"] == "BCS Information Systems" and a["posted_date"] == "2026-11-18" and a["easy_apply"] is True
+    assert a["employment_type"] == "Full-time" and a["salary"] == "S$8,000 - S$10,000" and a["source"] == "automation"
+    assert b["company"] == "Grab" and b["posted_date"] == "2025-11-18" and b["easy_apply"] is False
+    assert b["has_description"] and b["salary"] == "S$9k, S$12k"
+    # sending the same jobs again adds nothing; a plain list works too
+    again = c.post("/api/import/jobs?fill=false", json=items[:2]).json()
+    assert again["added"] == 0 and again["duplicates"] == 2
+    assert c.post("/api/import/jobs", content="nope", headers={"content-type": "application/json"}).status_code == 400
