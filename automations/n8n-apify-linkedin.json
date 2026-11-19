@@ -1,0 +1,410 @@
+{
+  "name": "Job Hacker: LinkedIn jobs from Apify",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 7 * * *"
+            }
+          ]
+        }
+      },
+      "id": "785e786a-29a6-4080-a793-07660f679cc8",
+      "name": "Every morning at 7",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "60b1342d-224e-404a-a5fe-4686ce943cdf",
+      "name": "Run now (test)",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "44f22512-68bd-4d0e-b5be-52d6846cd3d2",
+              "name": "apifyActor",
+              "type": "string",
+              "value": "curious_coder~linkedin-jobs-scraper"
+            },
+            {
+              "id": "6cf8c470-0d7c-400a-866b-1ec6a3235dc4",
+              "name": "actorInput",
+              "type": "string",
+              "value": "{\n  \"urls\": [\n    \"https://www.linkedin.com/jobs/search/?keywords=scrum%20master&location=Singapore&f_TPR=r86400\"\n  ],\n  \"count\": 100,\n  \"scrapeCompany\": false\n}"
+            },
+            {
+              "id": "3774adf0-ae34-4433-89c9-f32c7506c64c",
+              "name": "jobHackerUrl",
+              "type": "string",
+              "value": "http://host.docker.internal:8080"
+            },
+            {
+              "id": "cbec8138-4953-4217-956e-c93fc2b17052",
+              "name": "profile",
+              "type": "string",
+              "value": ""
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "4778b330-f17b-4ae2-b692-ca52e7b2bfe3",
+      "name": "Settings",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        240,
+        100
+      ],
+      "notes": "apifyActor: the Apify actor's ID (username~actor-name), from its page on Apify.\nactorInput: the actor's input as JSON. Copy it from the actor's Input tab on Apify (switch to JSON view).\njobHackerUrl: where n8n reaches Job Hacker. Same Docker host: http://host.docker.internal:8080. n8n Cloud: your public Job Hacker address.\nprofile: the Job Hacker profile to add jobs to, by name. Leave empty for the first profile.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.apify.com/v2/acts/{{ $json.apifyActor }}/runs?waitForFinish=60",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.actorInput }}"
+      },
+      "id": "94c9a41b-9ff8-489e-be57-b7a5da3d2bde",
+      "name": "Start the Apify run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        100
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "Apify API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "44d5a258-ac9a-4b86-9e37-b7623380e12c",
+              "leftValue": "={{ $json.data.status }}",
+              "rightValue": "SUCCEEDED",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "9c3ee1b2-dbef-4d6e-b342-3f6173a98a0b",
+      "name": "Finished?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        720,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c071fe8d-e624-4eee-8be7-6ec89bb59207",
+              "leftValue": "={{ ['FAILED', 'ABORTED', 'TIMED-OUT', 'TIMING-OUT', 'ABORTING'].includes($json.data.status) ? 'stop' : 'wait' }}",
+              "rightValue": "stop",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "d18a95c0-8f31-4b17-a9fe-e867cafb747a",
+      "name": "Failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        960,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "errorMessage": "={{ 'The Apify run ended with status ' + $json.data.status + '. Open it on Apify to see why: https://console.apify.com/view/runs/' + $json.data.id }}"
+      },
+      "id": "80038517-958c-4f08-b866-6177ffc4bf47",
+      "name": "Apify run failed",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        1200,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 1,
+        "unit": "minutes"
+      },
+      "id": "5c418521-ce96-4202-8a8d-145c33cde86b",
+      "name": "Wait a minute",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1200,
+        360
+      ],
+      "webhookId": "369bc1d0-f058-4181-8c8a-ff45cea2aeae"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.apify.com/v2/actor-runs/{{ $json.data.id }}?waitForFinish=60",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "93174dc9-1149-4316-bb16-5887c99eeb05",
+      "name": "Check the run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        360
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "Apify API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.apify.com/v2/datasets/{{ $json.data.defaultDatasetId }}/items?clean=true&format=json",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "7a59355a-2333-4e91-a3aa-5c9993e9e537",
+      "name": "Get the scraped jobs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "Apify API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Settings').first().json.jobHackerUrl.replace(/\\/$/, '') }}/api/import/jobs",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { items: $input.all().map(i => i.json) } }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-User",
+              "value": "={{ $('Settings').first().json.profile }}"
+            }
+          ]
+        }
+      },
+      "id": "58422a57-0e5c-4b46-a6b4-9ee1fa988661",
+      "name": "Send to Job Hacker",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "Job Hacker API"
+        }
+      },
+      "executeOnce": true
+    }
+  ],
+  "connections": {
+    "Every morning at 7": {
+      "main": [
+        [
+          {
+            "node": "Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run now (test)": {
+      "main": [
+        [
+          {
+            "node": "Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Settings": {
+      "main": [
+        [
+          {
+            "node": "Start the Apify run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start the Apify run": {
+      "main": [
+        [
+          {
+            "node": "Finished?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finished?": {
+      "main": [
+        [
+          {
+            "node": "Get the scraped jobs",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Failed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Failed?": {
+      "main": [
+        [
+          {
+            "node": "Apify run failed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait a minute",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait a minute": {
+      "main": [
+        [
+          {
+            "node": "Check the run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check the run": {
+      "main": [
+        [
+          {
+            "node": "Finished?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get the scraped jobs": {
+      "main": [
+        [
+          {
+            "node": "Send to Job Hacker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "active": false,
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

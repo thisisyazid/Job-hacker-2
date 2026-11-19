@@ -87,6 +87,8 @@ Content-Type: application/json
 
 Returns 201 for a new job. If the link is already saved, empty fields on the saved job are filled in and you get 200 with `"duplicate": true`. Interactive API docs are at `/api/docs` once logged in.
 
+**LinkedIn jobs from Apify, no CSV:** [`automations/`](automations/README.md) has a ready-made n8n workflow. It runs an Apify LinkedIn scraper every morning and sends the results to `POST /api/import/jobs`, which works like the CSV import: it skips saved and archived jobs, updates the posted date on reposts, flags look-alikes and reads Easy Apply.
+
 ## Log files
 
 Job Hacker writes one log file per day to `logs/` in the data folder (`/data/logs` in Docker), named `jobhacker-YYYY-MM-DD.log`, and keeps the last 30 days (`LOG_KEEP_DAYS`). Each line says what happened: CSV and backup imports with what every row became (added, already saved as which job, taken down, no title), links read and how, AI calls with timings, overnight runs, deletions and errors with tracebacks. API keys, resumes and job descriptions are never written.
