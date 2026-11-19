@@ -819,3 +819,39 @@ def test_import_jobs_json_from_apify(c):
     again = c.post("/api/import/jobs?fill=false", json=items[:2]).json()
     assert again["added"] == 0 and again["duplicates"] == 2
     assert c.post("/api/import/jobs", content="nope", headers={"content-type": "application/json"}).status_code == 400
+
+
+def test_documents_made_in_the_background(c, monkeypatch):
+    import time as _t
+    from app import ai
+    c.post("/api/personas", json={"name": "BG CV", "resume_text": "My resume", "is_default": True})
+    j = c.post("/api/jobs", json={"title": "Background role", "company": "BCS", "description": "Desc"}).json()
+    monkeypatch.setattr(ai, "resolve", lambda e: "claude")
+    gate = {"go": False}
+    def slow(*a, **k):
+        while not gate["go"]:
+            _t.sleep(0.02)
+        return "# Background CV"
+    monkeypatch.setattr(ai, "tailor_resume", slow)
+    r = c.post(f"/api/jobs/{j['id']}/documents", json={"kind": "resume", "background": True})
+    assert r.status_code == 202
+    task = r.json()["task"]
+    assert task["status"] in ("queued", "running") and task["title"] == "Background role" and task["label"] == "Tailored resume"
+    # a second one waits its turn and can be cancelled
+    second = c.post(f"/api/jobs/{j['id']}/documents", json={"kind": "resume", "background": True}).json()["task"]
+    listed = c.get("/api/tasks").json()
+    assert listed["active"] == 2
+    assert c.delete(f"/api/tasks/{second['id']}").json()["ok"] is True
+    gate["go"] = True
+    for _ in range(200):
+        t = next(x for x in c.get("/api/tasks").json()["tasks"] if x["id"] == task["id"])
+        if t["status"] == "done":
+            break
+        _t.sleep(0.02)
+    assert t["status"] == "done" and t["document_id"]
+    docs = c.get(f"/api/jobs/{j['id']}").json()["documents"]
+    assert [d["content"] for d in docs] == ["# Background CV"]
+    assert c.delete(f"/api/tasks/{task['id']}").status_code == 409  # finished: can't cancel
+    # problems that can be found straight away are still reported straight away
+    nodesc = c.post("/api/jobs", json={"title": "No description"}).json()
+    assert c.post(f"/api/jobs/{nodesc['id']}/documents", json={"kind": "resume", "background": True}).status_code == 400

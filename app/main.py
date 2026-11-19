@@ -17,7 +17,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
-from . import ai, auth, config, logs, nightly
+from . import ai, auth, config, logs, nightly, tasks
 from .dates import is_iso, normalize as normalize_date
 from .db import STATUSES, Document, Job, NightlyRun, Persona, User, get_db, init_db, now
 from . import dupes
@@ -227,6 +227,7 @@ class GenIn(BaseModel):
     persona_id: Optional[int] = None
     instructions: str = ""
     engine: Optional[str] = None
+    background: bool = False  # make it on the server and return straight away (see GET /api/tasks)
 
 
 class EngineIn(BaseModel):
@@ -950,6 +951,8 @@ def generate_document(job_id: int, body: GenIn, user: User = Depends(current_use
     if not p or not p.resume_text.strip():
         raise HTTPException(400, "Add your base resume in Settings first.")
     eng = _engine_or_400(body.engine)
+    if body.background:
+        return JSONResponse({"task": tasks.submit(user.id, j, body.kind, p.id, body.instructions, eng)}, status_code=202)
     try:
         fn = ai.tailor_resume if body.kind == "resume" else ai.cover_letter
         text = fn(p.resume_text, j, body.instructions, engine=eng)
@@ -960,6 +963,20 @@ def generate_document(job_id: int, body: GenIn, user: User = Depends(current_use
     db.add(d)
     db.commit()
     return doc_out(d)
+
+
+@app.get("/api/tasks")
+def list_tasks(user: User = Depends(current_user)):
+    """Documents being made on the server for this profile: queued, running and recently finished."""
+    ts = tasks.list_for(user.id)
+    return {"tasks": ts, "active": sum(t["status"] in ("queued", "running") for t in ts)}
+
+
+@app.delete("/api/tasks/{task_id}")
+def cancel_task(task_id: int, user: User = Depends(current_user)):
+    if not tasks.cancel(user.id, task_id):
+        raise HTTPException(409, "Only a task that hasn't started yet can be cancelled.")
+    return {"ok": True}
 
 
 def _own_doc(doc_id: int, user: User, db: Session) -> Document:

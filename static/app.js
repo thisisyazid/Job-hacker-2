@@ -543,6 +543,7 @@ function bindEnginePickers(root = document) {
 
 function setView(markup, { keep = false } = {}) {
   $main.innerHTML = markup;
+  queueMicrotask(drawTasks);  // the task bar and job notes live in the page just drawn
   if (!keep) {
     $main.firstElementChild?.classList.add("view-enter");
     window.scrollTo(0, 0);
@@ -585,7 +586,116 @@ async function route() {
 function markNav(n) { document.querySelector(`[data-nav=${n}]`)?.setAttribute("aria-current", "page"); }
 
 async function loadSession() {
+  const first = !state.session;
   state.session = await api("/session");
+  if (first && state.session.ai_enabled && !(state.session.auth_required && !state.session.logged_in)) pollTasks();
+}
+
+// ---------- documents being made on the server ----------
+// Resumes and cover letters are queued on the server (see app/tasks.py), so you can keep using
+// the app. This keeps an eye on them: a bar on the job list, a pill in the top bar, a note on
+// the job's page, and a message when each one is ready.
+let tasksNow = [], taskTimer = null, taskTick = null;
+const taskActive = (t) => t.status === "queued" || t.status === "running";
+function trackTask(t) {
+  tasksNow = [t, ...tasksNow.filter((x) => x.id !== t.id)];
+  drawTasks();
+  clearTimeout(taskTimer);
+  taskTimer = setTimeout(pollTasks, 3000);
+}
+async function pollTasks() {
+  clearTimeout(taskTimer);
+  let r;
+  try { r = await api("/tasks"); } catch { taskTimer = setTimeout(pollTasks, 10000); return; }
+  const before = new Map(tasksNow.map((t) => [t.id, t.status]));
+  tasksNow = r.tasks;
+  for (const t of tasksNow) {
+    const was = before.get(t.id);
+    if (!was || !["queued", "running"].includes(was) || taskActive(t)) continue;
+    const what = `${t.label} for ${t.title}${t.company ? ` at ${t.company}` : ""}`;
+    if (t.status === "done") {
+      toast(`${what} is ready.`);
+      refreshJobDocs(t);
+      const j = (state.jobs || []).find((x) => x.id === t.job_id);
+      if (j && t.kind === "resume") { j.has_resume = true; if (document.getElementById("jobs")) drawRows(); }
+    }
+    else if (t.status === "failed") toast(`${what} couldn't be made: ${t.error}`, "error");
+  }
+  drawTasks();
+  if (r.active) taskTimer = setTimeout(pollTasks, 4000);
+}
+async function refreshJobDocs(t) {
+  if (location.hash !== `#/job/${t.job_id}` || !document.getElementById("docs")) return;
+  try {
+    const fresh = await api(`/jobs/${t.job_id}`);
+    if (docJob && docJob.id === t.job_id) docJob.documents = fresh.documents;
+    drawDocs(fresh.documents, t.document_id);
+  } catch { /* the page shows it on the next visit */ }
+}
+function elapsed(t) {
+  const from = t.started_at || t.queued_at;
+  const s = Math.max(0, Math.floor((Date.now() - new Date(from).getTime()) / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+function drawTasks() {
+  const active = tasksNow.filter(taskActive);
+  const running = active.find((t) => t.status === "running");
+  // top bar pill, on every page
+  const pill = document.getElementById("task-pill");
+  if (pill) {
+    pill.hidden = !active.length;
+    pill.querySelector("span:last-child").textContent = `${active.length} in progress`;
+    pill.title = running ? `${running.label} for ${running.title}: ${elapsed(running)}` : "Documents waiting on the server";
+  }
+  // bar on the job list
+  const bar = document.getElementById("task-bar");
+  if (bar) {
+    const recent = tasksNow.filter((t) => !taskActive(t) && t.status !== "cancelled" && Date.now() - new Date(t.finished_at).getTime() < 15 * 60000).slice(0, 3);
+    bar.hidden = !active.length && !recent.length;
+    bar.innerHTML = html`
+      ${running ? raw(html`<p class="tk-now"><span class="spinner" aria-hidden="true"></span><span><strong>Making on the server:</strong> ${running.label} for <a href="#/job/${running.job_id}">${running.title}</a>${running.company ? ` at ${running.company}` : ""} · ${running.engine} · <span class="tk-clock" data-from="${running.started_at}">${elapsed(running)}</span></span></p>`) : ""}
+      ${active.filter((t) => t.status === "queued").map((t) => raw(html`<p class="tk-wait">Waiting: ${t.label} for <a href="#/job/${t.job_id}">${t.title}</a> <button class="linkbtn" type="button" data-cancel-task="${t.id}">Cancel</button></p>`))}
+      ${recent.map((t) => raw(t.status === "done"
+        ? html`<p class="tk-done">✓ Ready: ${t.label} for <a href="#/job/${t.job_id}">${t.title}</a>${t.company ? ` at ${t.company}` : ""}</p>`
+        : html`<p class="tk-fail">Couldn't make the ${t.label.toLowerCase()} for <a href="#/job/${t.job_id}">${t.title}</a>: ${t.error}</p>`))}`;
+    bar.querySelectorAll("[data-cancel-task]").forEach((b) => b.addEventListener("click", async () => {
+      try { await api(`/tasks/${b.dataset.cancelTask}`, { method: "DELETE" }); toast("Cancelled"); pollTasks(); }
+      catch (e) { toast(e.message, "error"); }
+    }));
+  }
+  // note on the job's own page
+  const pend = document.getElementById("doc-pending");
+  if (pend && docJob) {
+    const mine = active.filter((t) => t.job_id === docJob.id);
+    pend.innerHTML = mine.map((t) => html`<p class="doc-pending"><span class="spinner" aria-hidden="true"></span>
+      ${t.status === "running" ? `${t.label} being made on the server by ${t.engine}` : `${t.label} waiting its turn on the server`} ·
+      <span class="tk-clock" data-from="${t.started_at || t.queued_at}">${elapsed(t)}</span>. You can leave this page; it appears here when it's ready.</p>`).join("");
+  }
+  // keep the clocks moving between polls
+  clearInterval(taskTick);
+  if (active.length) taskTick = setInterval(() => document.querySelectorAll(".tk-clock").forEach((c) => {
+    c.textContent = elapsed({ started_at: c.dataset.from });
+  }), 1000);
+}
+
+// A short note that the work carries on on the server; closes itself after 5 seconds.
+function serverNotice(title, detail, typical) {
+  const el = document.createElement("div");
+  el.className = "aiwait show";
+  el.setAttribute("role", "status");
+  el.innerHTML = html`
+    <div class="aiwait-card">
+      <svg class="donut" viewBox="0 0 80 80" aria-hidden="true"><circle class="donut-track" cx="40" cy="40" r="32"/><circle class="donut-arc" cx="40" cy="40" r="32"/></svg>
+      <h2>${title}</h2>
+      <p class="aiwait-detail">${detail} It keeps going if you leave this page, ${typical}. Progress shows on the job list, and it appears on this job when it's ready.</p>
+      <button class="btn btn-primary" type="button">Keep using Job Hacker <span class="sn-count">(5)</span></button>
+    </div>`;
+  document.body.append(el);
+  let n = 5;
+  const close = () => { clearInterval(timer); el.classList.remove("show"); setTimeout(() => el.remove(), 200); };
+  const timer = setInterval(() => { n -= 1; if (n <= 0) close(); else el.querySelector(".sn-count").textContent = `(${n})`; }, 1000);
+  el.querySelector("button").addEventListener("click", close);
+  el.addEventListener("click", (e) => { if (e.target === el) close(); });
 }
 
 // ---------- login ----------
@@ -677,6 +787,7 @@ async function renderList(keep = false) {
       ${fOn("dupes") && ndupes ? raw(html`<div class="archive-bar"><p>Jobs with the same company and a near-identical title, usually the same job saved from two sites. Hover the tag to see the match, then select the extra copies and archive or delete them.</p></div>`) : ""}
       ${fOn("nodesc") && nodesc ? raw(html`<div class="archive-bar"><p>Tick the jobs to fill in (or the box at the top of the table for all of them), then click <strong>Fill in</strong> in the bar at the bottom.</p></div>`) : ""}
       ${fOn("archived") && archived ? raw(html`<div class="archive-bar"><p>Archived jobs keep their stage and everything in them. Search them here, or open one to unarchive it.</p></div>`) : ""}
+      <div class="task-bar" id="task-bar" hidden></div>
       <div class="tonight-bar" id="tonight-bar">
         <p class="tn-sum"><strong>Tonight's list:</strong> <span id="tn-sum">${picked ? `${picked} job${picked === 1 ? "" : "s"} picked.` : "empty. Tick jobs in the Tonight column."}</span></p>
         <div class="tn-tools">
@@ -1770,6 +1881,7 @@ async function renderJob(id) {
             <span class="hint">Made overnight instead, as set up in <a href="#/settings">Settings</a>.</span>
           </div>
         </div>
+        <div id="doc-pending"></div>
         <div id="docs" style="margin-top:14px"></div>
       </section>`) : ""}
 
@@ -1858,19 +1970,18 @@ async function renderJob(id) {
     drawDocs(j.documents);
     $main.querySelectorAll("[data-gen]").forEach((b) => b.addEventListener("click", async () => {
       const kind = b.dataset.gen;
-      const done = busy(b, kind === "resume" ? "Tailoring" : "Writing");
+      const done = busy(b, "Starting");
       try {
+        // made on the server: the page doesn't have to stay open
+        const r = await api(`/jobs/${id}/documents`, { json: {
+          kind, engine: currentEngine(), background: true, persona_id: Number(document.getElementById("persona")?.value) || null,
+          instructions: document.getElementById("instr").value,
+        } });
+        trackTask(r.task);
         const at = `${j.title}${j.company ? ` at ${j.company}` : ""}`;
-        const doc = await withAI(kind === "resume"
-          ? { title: "Tailoring your resume", detail: (w) => `${w} is matching your resume to ${at} and rewriting the summary and bullets.`, typical: { claude: "30–90 seconds", local: "1–4 minutes" } }
-          : { title: "Writing your cover letter", detail: (w) => `${w} is writing a letter for ${at} from your resume.`, typical: { claude: "15–45 seconds", local: "1–2 minutes" } },
-          (engine) => api(`/jobs/${id}/documents`, { json: {
-            kind, engine, persona_id: Number(document.getElementById("persona")?.value) || null,
-            instructions: document.getElementById("instr").value,
-          } }));
-        j.documents.unshift(doc);
-        drawDocs(j.documents, doc.id);
-        toast(kind === "resume" ? "Resume ready" : "Cover letter ready");
+        serverNotice(kind === "resume" ? "Tailoring your resume" : "Writing your cover letter",
+          `${r.task.engine} is ${kind === "resume" ? "tailoring your resume to" : "writing a cover letter for"} ${at} on the server.`,
+          currentEngine() === "local" ? "usually 1–4 minutes" : "usually under a minute");
       } catch (e) { toast(e.message, "error"); }
       done();
     }));

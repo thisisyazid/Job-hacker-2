@@ -740,3 +740,19 @@ body.no-credit .credit { display: none; }
 .linkbtn { background: none; border: 0; padding: 0; color: var(--accent); text-decoration: underline; font: inherit; cursor: pointer; }
 .li-result { margin-top: 14px; }
 .li-result .doc-text { white-space: pre-wrap; }
+
+/* ---------- documents being made on the server ---------- */
+.task-bar { border: 1px solid var(--line); background: var(--surface); border-radius: var(--radius-m); padding: 10px 16px; margin-bottom: 12px; display: grid; gap: 6px; font-size: 16px; }
+.task-bar p { margin: 0; }
+.tk-now { display: flex; align-items: center; gap: 10px; }
+.tk-now .spinner, .doc-pending .spinner, .task-pill .spinner { width: 15px; height: 15px; border-width: 2px; color: var(--accent); flex: none; }
+.tk-wait { color: var(--muted); padding-left: 25px; }
+.tk-done { color: var(--fit-high); }
+.tk-done a, .tk-fail a { font-weight: 600; }
+.tk-fail { color: var(--danger); }
+.tk-clock { font-variant-numeric: tabular-nums; }
+.doc-pending { display: flex; align-items: center; gap: 10px; margin: 12px 0 0; padding: 10px 14px; border-radius: var(--radius-s); background: var(--accent-soft); font-size: 16px; }
+.task-pill { display: inline-flex; align-items: center; gap: 8px; padding: 0 12px; min-height: 36px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-weight: 700; font-size: 14px; text-decoration: none; white-space: nowrap; }
+.task-pill[hidden] { display: none; }
+.aiwait-card .btn { margin-top: 18px; }
+@media (max-width: 520px) { .task-pill span:last-child { display: none; } }
