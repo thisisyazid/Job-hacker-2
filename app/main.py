@@ -10,7 +10,7 @@ import time
 from typing import Optional
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import func
@@ -46,7 +46,12 @@ async def guard(request: Request, call_next):
     if path.startswith("/api/") and path not in OPEN_PATHS and not auth.is_authed(request):
         return JSONResponse({"detail": "Log in to continue."}, status_code=401)
     if not path.startswith("/api/"):
-        return await call_next(request)
+        resp = await call_next(request)
+        if path.startswith("/assets/"):
+            # check with the server before reusing a cached copy (a cheap 304 when nothing changed),
+            # so an update never leaves the browser on old code
+            resp.headers["Cache-Control"] = "no-cache"
+        return resp
     ai.use_claude_model(request.headers.get("x-claude-model"))
     t0 = time.monotonic()
     try:
@@ -1471,4 +1476,21 @@ app.mount("/assets", StaticFiles(directory=config.STATIC_DIR), name="assets")
 def spa(path: str):
     if path.startswith("api/"):
         raise HTTPException(404)
-    return FileResponse(config.STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"})
+    return HTMLResponse(_index_html(), headers={"Cache-Control": "no-cache"})
+
+
+_index_cache: dict = {}
+
+
+def _index_html() -> str:
+    """index.html with the app version on its script and stylesheet addresses, so each update
+    loads fresh files instead of whatever the browser cached last time."""
+    p = config.STATIC_DIR / "index.html"
+    key = (p.stat().st_mtime, config.APP_VERSION)
+    if _index_cache.get("key") != key:
+        v = config.APP_VERSION
+        html = p.read_text(encoding="utf-8")
+        html = html.replace('"/assets/app.js"', f'"/assets/app.js?v={v}"').replace('"/assets/app.css"', f'"/assets/app.css?v={v}"')
+        html = html.replace("<head>", f'<head>\n  <meta name="jh-version" content="{v}">', 1)
+        _index_cache.update(key=key, html=html)
+    return _index_cache["html"]

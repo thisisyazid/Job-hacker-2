@@ -855,3 +855,13 @@ def test_documents_made_in_the_background(c, monkeypatch):
     # problems that can be found straight away are still reported straight away
     nodesc = c.post("/api/jobs", json={"title": "No description"}).json()
     assert c.post(f"/api/jobs/{nodesc['id']}/documents", json={"kind": "resume", "background": True}).status_code == 400
+
+
+def test_app_files_load_fresh_after_an_update(c):
+    from app import config
+    page = c.get("/").text
+    assert f'/assets/app.js?v={config.APP_VERSION}' in page and f'/assets/app.css?v={config.APP_VERSION}' in page
+    assert f'<meta name="jh-version" content="{config.APP_VERSION}">' in page
+    r = c.get(f"/assets/app.js?v={config.APP_VERSION}")
+    assert r.status_code == 200 and r.headers["cache-control"] == "no-cache"
+    assert c.get("/").headers["cache-control"] == "no-cache"

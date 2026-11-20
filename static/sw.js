@@ -1,6 +1,6 @@
 // Minimal service worker: makes the app installable and keeps the shell fast.
 // API calls always go to the network — job data is never cached here.
-const CACHE = "jh-shell-v2";
+const CACHE = "jh-shell-v3";
 const SHELL = ["/", "/assets/app.css", "/assets/app.js", "/assets/icons/icon.svg"];
 
 self.addEventListener("install", (e) => {
