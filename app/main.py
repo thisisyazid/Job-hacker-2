@@ -53,6 +53,7 @@ async def guard(request: Request, call_next):
             resp.headers["Cache-Control"] = "no-cache"
         return resp
     ai.use_claude_model(request.headers.get("x-claude-model"))
+    ai.use_local_model(request.headers.get("x-local-model"))
     t0 = time.monotonic()
     try:
         resp = await call_next(request)
@@ -250,6 +251,7 @@ class NightlyIn(BaseModel):
     max_jobs: Optional[int] = Field(default=None, ge=1, le=2000)
     stop_at: Optional[str] = Field(default=None, pattern=r"^(([01]\d|2[0-3]):[0-5]\d)?$")
     claude_model: Optional[str] = None
+    local_model: Optional[str] = Field(default=None, max_length=200)
 
 
 class DocPatch(BaseModel):
@@ -285,28 +287,31 @@ def health():
 class LocalModelIn(BaseModel):
     url: str = ""
     model: str = ""
+    kind: str = ""  # ollama | openai
 
 
-def _local_model_out(url: str | None = None) -> dict:
+def _local_model_out(url: str | None = None, kind: str | None = None) -> dict:
     """The local model's settings, what Ollama at that address has installed, and whether it works."""
     use = (url or ai.ollama_url()).strip().rstrip("/")
+    kind = kind if kind in ai.LOCAL_KINDS else ai.local_kind()
     out = {"url": ai.ollama_url(), "model": ai.ollama_model(), "default_url": config.OLLAMA_URL,
-           "default_model": config.OLLAMA_MODEL, "checked_url": use, "models": [], "error": ""}
+           "default_model": config.OLLAMA_MODEL, "checked_url": use, "models": [], "error": "",
+           "kind": ai.local_kind(), "checked_kind": kind, "recommended": config.RECOMMENDED_LOCAL_MODELS}
     if not use:
         out["error"] = "No address set."
         return out
     try:
-        out["models"] = ai.ollama_models(use)
+        out["models"] = ai.ollama_models(use, kind)
     except Exception as e:
-        out["error"] = f"Couldn't reach Ollama at {use} ({e.__class__.__name__})."
+        out["error"] = f"Couldn't reach {'Ollama' if kind == 'ollama' else 'a local AI server'} at {use} ({e.__class__.__name__})."
     st = ai.local_status(force=True)
     out.update(ok=st["ok"], reason=st["reason"])
     return out
 
 
 @app.get("/api/local-model")
-def get_local_model(url: str = ""):
-    return _local_model_out(url or None)
+def get_local_model(url: str = "", kind: str = ""):
+    return _local_model_out(url or None, kind or None)
 
 
 @app.put("/api/local-model")
@@ -314,7 +319,7 @@ def put_local_model(body: LocalModelIn):
     url = body.url.strip()
     if url and not re.match(r"^https?://", url, re.I):
         url = "http://" + url
-    ai.save_local_settings(url, body.model)
+    ai.save_local_settings(url, body.model, body.kind)
     log.info("local model set to %s at %s", ai.ollama_model(), ai.ollama_url() or "(none)")
     return _local_model_out()
 
@@ -844,7 +849,7 @@ def _nightly_out(db: Session, user: User) -> dict:
     runs = db.query(NightlyRun).filter(NightlyRun.user_id == user.id).order_by(NightlyRun.id.desc()).limit(5).all()
     return {
         "settings": {k: getattr(s, k) for k in ("enabled", "run_time", "engine", "do_resume", "do_fit", "do_cover",
-                                                         "fit_new", "max_jobs", "stop_at", "claude_model")},
+                                                         "fit_new", "max_jobs", "stop_at", "claude_model", "local_model")},
         "timezone": config.TIMEZONE,
         "running": nightly.is_running(),
         "pending": nightly.summary(db, user.id, s),
