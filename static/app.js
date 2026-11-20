@@ -588,6 +588,18 @@ function markNav(n) { document.querySelector(`[data-nav=${n}]`)?.setAttribute("a
 async function loadSession() {
   const first = !state.session;
   state.session = await api("/session");
+  // This tab is running an older version than the server (it was open during an update):
+  // reload once to pick up the new code.
+  const mine = document.querySelector('meta[name="jh-version"]')?.content;
+  if (first && mine && state.session.version && mine !== state.session.version) {
+    let tried = null;
+    try { tried = sessionStorage.getItem("jh.reloadedFor"); } catch { /* private mode */ }
+    if (tried !== state.session.version) {
+      try { sessionStorage.setItem("jh.reloadedFor", state.session.version); } catch { /* private mode */ }
+      location.reload();
+      return;
+    }
+  }
   if (first && state.session.ai_enabled && !(state.session.auth_required && !state.session.logged_in)) pollTasks();
 }
 
