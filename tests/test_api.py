@@ -725,7 +725,7 @@ def test_import_skips_archived_jobs_and_flags_reposts_of_them(c):
 
 def test_local_model_settings_saved_in_app(c, monkeypatch):
     from app import ai
-    monkeypatch.setattr(ai, "ollama_models", lambda url=None: ["qwen3:14b", "qwen3:8b"])
+    monkeypatch.setattr(ai, "ollama_models", lambda url=None, kind=None: ["qwen3:14b", "qwen3:8b"])
     r = c.get("/api/local-model?url=http://bazzite.local:11434").json()
     assert r["checked_url"] == "http://bazzite.local:11434" and r["models"] == ["qwen3:14b", "qwen3:8b"]
     r = c.put("/api/local-model", json={"url": "bazzite.local:11434/", "model": "qwen3:8b"}).json()
@@ -865,3 +865,38 @@ def test_app_files_load_fresh_after_an_update(c):
     r = c.get(f"/assets/app.js?v={config.APP_VERSION}")
     assert r.status_code == 200 and r.headers["cache-control"] == "no-cache"
     assert c.get("/").headers["cache-control"] == "no-cache"
+
+
+def test_local_model_choice_and_openai_compatible_servers(c, monkeypatch):
+    from app import ai, db as dbm
+    # per-request model from the picker (X-Local-Model) and the label it gives documents
+    ai.use_local_model("gemma3:12b")
+    assert ai.local_model() == "gemma3:12b" and ai.label("local") == "Local (gemma3:12b)"
+    ai.use_local_model(None)
+    assert ai.local_model() == ai.ollama_model()
+    # an OpenAI-compatible server (LM Studio and the like)
+    calls = {}
+    class R:
+        def __init__(self, data): self._d = data
+        def raise_for_status(self): pass
+        def json(self): return self._d
+    def fake_get(url, **k):
+        calls["get"] = url
+        return R({"data": [{"id": "qwen/qwen3-14b"}, {"id": "google/gemma-3-12b"}]})
+    def fake_post(url, json=None, **k):
+        calls["post"], calls["body"] = url, json
+        return R({"choices": [{"message": {"content": "<think>hmm</think>Hello there."}, "finish_reason": "stop"}], "usage": {}})
+    monkeypatch.setattr(ai.httpx, "get", fake_get)
+    monkeypatch.setattr(ai.httpx, "post", fake_post)
+    r = c.put("/api/local-model", json={"url": "http://192.168.0.50:1234", "model": "qwen/qwen3-14b", "kind": "openai"}).json()
+    assert r["kind"] == "openai" and r["models"] == ["google/gemma-3-12b", "qwen/qwen3-14b"] and r["ok"] is True
+    assert calls["get"] == "http://192.168.0.50:1234/v1/models"
+    assert any(m["id"] == "qwen3:14b" for m in r["recommended"])
+    ai.use_local_model("google/gemma-3-12b")
+    assert ai._ask_local("sys", "hi", 100, False) == "Hello there."
+    assert calls["post"] == "http://192.168.0.50:1234/v1/chat/completions" and calls["body"]["model"] == "google/gemma-3-12b"
+    ai.use_local_model(None)
+    # overnight runs can use their own local model
+    assert c.patch("/api/nightly", json={"local_model": "qwen3:8b"}).json()["settings"]["local_model"] == "qwen3:8b"
+    c.patch("/api/nightly", json={"local_model": ""})
+    c.put("/api/local-model", json={"url": "", "model": "", "kind": ""})

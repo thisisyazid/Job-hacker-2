@@ -40,7 +40,7 @@ def _load_local_cfg() -> dict:
         try:
             from .db import AppSetting, SessionLocal
             with SessionLocal() as s:
-                for row in s.query(AppSetting).filter(AppSetting.key.in_(("ollama_url", "ollama_model"))):
+                for row in s.query(AppSetting).filter(AppSetting.key.in_(("ollama_url", "ollama_model", "local_kind"))):
                     cfg[row.key] = row.value or ""
         except Exception:  # table not there yet (first start): use the defaults, look again next time
             return cfg
@@ -53,15 +53,43 @@ def ollama_url() -> str:
 
 
 def ollama_model() -> str:
+    """The saved local model (Settings); see local_model() for the one a request uses."""
     return (_load_local_cfg().get("ollama_model") or config.OLLAMA_MODEL or "").strip()
 
 
-def save_local_settings(url: str, model: str) -> None:
+LOCAL_KINDS = ("ollama", "openai")  # openai = any server with the OpenAI chat API: LM Studio, llama.cpp, Jan, vLLM
+
+
+def local_kind() -> str:
+    k = _load_local_cfg().get("local_kind") or config.LOCAL_KIND
+    return k if k in LOCAL_KINDS else "ollama"
+
+
+def _openai_base(url: str) -> str:
+    u = url.rstrip("/")
+    return u if u.endswith("/v1") else u + "/v1"
+
+
+# The local model for the current request or overnight run: the model picker in the app sends
+# X-Local-Model; falls back to the model saved in Settings.
+_local_model: contextvars.ContextVar[str | None] = contextvars.ContextVar("local_model", default=None)
+
+
+def use_local_model(model: str | None) -> None:
+    _local_model.set((model or "").strip()[:200] or None)
+
+
+def local_model() -> str:
+    return _local_model.get() or ollama_model()
+
+
+def save_local_settings(url: str, model: str, kind: str = "") -> None:
     """Empty values go back to the .env defaults."""
     global _local_cfg
     from .db import AppSetting, SessionLocal
+    kind = kind if kind in LOCAL_KINDS else ""
     with SessionLocal() as s:
-        for key, val in (("ollama_url", url.strip().rstrip("/")), ("ollama_model", model.strip())):
+        for key, val in (("ollama_url", url.strip().rstrip("/")), ("ollama_model", model.strip()), ("local_kind", kind)):
             row = s.get(AppSetting, key)
             if val:
                 if row:
@@ -75,11 +103,21 @@ def save_local_settings(url: str, model: str) -> None:
     _local_cache.update(at=0.0, status=None)
 
 
-def ollama_models(url: str | None = None) -> list[str]:
-    """Models installed in Ollama at url (or the saved address), for the picker in Settings."""
-    r = httpx.get((url or ollama_url()).rstrip("/") + "/api/tags", timeout=httpx.Timeout(3.0))
+def ollama_models(url: str | None = None, kind: str | None = None) -> list[str]:
+    """Models installed on the local AI server at url (or the saved address): Ollama's list, or
+    an OpenAI-compatible server's /v1/models (LM Studio, llama.cpp, Jan, vLLM)."""
+    base, kind = (url or ollama_url()).rstrip("/"), (kind or local_kind())
+    if kind == "openai":
+        r = httpx.get(_openai_base(base) + "/models", timeout=httpx.Timeout(3.0))
+        r.raise_for_status()
+        return sorted(m.get("id", "") for m in r.json().get("data", []) if m.get("id"))
+    r = httpx.get(base + "/api/tags", timeout=httpx.Timeout(3.0))
     r.raise_for_status()
     return sorted(m.get("name", "") for m in r.json().get("models", []) if m.get("name"))
+
+
+def _has_model(names, want: str) -> bool:
+    return want in names or f"{want}:latest" in names or any(n.split(":")[0] == want for n in names)
 
 
 # ---------- availability ----------
@@ -91,17 +129,22 @@ def local_status(force: bool = False) -> dict:
         return {"ok": False, "model": ollama_model(), "reason": "No local model address is set. Add it in Settings."}
     if not force and _local_cache["status"] and time.time() - _local_cache["at"] < 60:
         return _local_cache["status"]
-    st = {"ok": False, "model": ollama_model(), "reason": ""}
+    st = {"ok": False, "model": ollama_model(), "reason": "", "models": []}
+    server = "Ollama" if local_kind() == "ollama" else "the local AI server"
     try:
-        r = httpx.get(ollama_url().rstrip("/") + "/api/tags", timeout=httpx.Timeout(2.0))
-        names = {m.get("name", "") for m in r.json().get("models", [])}
+        names = ollama_models()
+        st["models"] = names
         want = ollama_model()
-        if want in names or f"{want}:latest" in names or any(n.split(":")[0] == want for n in names):
+        if _has_model(names, want):
             st["ok"] = True
-        else:
+        elif local_kind() == "openai" and names and not want:
+            st.update(ok=True, model=names[0])
+        elif local_kind() == "ollama":
             st["reason"] = f"Ollama is running but doesn't have {want}. Run: ollama pull {want}"
+        else:
+            st["reason"] = f"The local AI server is running but doesn't offer {want or 'any model'}. Load it there, or pick one in Settings."
     except Exception as e:
-        st["reason"] = f"Couldn't reach Ollama at {ollama_url()} ({e.__class__.__name__})."
+        st["reason"] = f"Couldn't reach {server} at {ollama_url()} ({e.__class__.__name__})."
     _local_cache.update(at=time.time(), status=st)
     return st
 
@@ -133,7 +176,8 @@ def engines() -> dict:
                    "model": config.CLAUDE_MODEL,
                    "models": [{"id": k, **v} for k, v in config.CLAUDE_MODELS.items()],
                    "reason": "" if config.ANTHROPIC_API_KEY else "ANTHROPIC_API_KEY isn't set."},
-        "local": {"available": loc["ok"], "label": "Local", "model": ollama_model(), "url": ollama_url(), "reason": loc["reason"]},
+        "local": {"available": loc["ok"], "label": "Local", "model": loc.get("model") or ollama_model(), "url": ollama_url(),
+                  "kind": local_kind(), "models": loc.get("models", []), "reason": loc["reason"]},
         "default": default_engine(),
     }
 
@@ -173,7 +217,7 @@ def claude_model_name(model: str | None = None) -> str:
 
 
 def label(engine: str) -> str:
-    return f"Claude {claude_model_name()}" if engine == "claude" else f"Local ({ollama_model()})"
+    return f"Claude {claude_model_name()}" if engine == "claude" else f"Local ({local_model()})"
 
 
 # ---------- calls ----------
@@ -225,9 +269,40 @@ def _ask_claude(system: str, user: str, max_tokens: int) -> str:
 LOCAL_MIN_PREDICT = 8192
 
 
+def _ask_openai_compatible(system: str, user: str, max_tokens: int) -> str:
+    """LM Studio, llama.cpp's server, Jan, vLLM and others that speak the OpenAI chat API."""
+    model = local_model() or (local_status().get("model") or "")
+    body = {"model": model, "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            "max_tokens": max(max_tokens, LOCAL_MIN_PREDICT), "temperature": 0.4, "stream": False}
+    timeout = httpx.Timeout(config.OLLAMA_TIMEOUT, connect=5.0)
+    try:
+        r = httpx.post(_openai_base(ollama_url()) + "/chat/completions", json=body, timeout=timeout)
+        r.raise_for_status()
+        data = r.json()
+        choice = (data.get("choices") or [{}])[0]
+        text = (choice.get("message") or {}).get("content") or ""
+        usage = data.get("usage") or {}
+        log.info("local model %s (OpenAI-compatible): stopped=%s, tokens in=%s out=%s, %d chars", model,
+                 choice.get("finish_reason"), usage.get("prompt_tokens", "?"), usage.get("completion_tokens", "?"), len(text))
+        if choice.get("finish_reason") == "length":
+            raise AIError("The local model's answer was cut off before it finished. Try again, or use Claude.")
+    except AIError:
+        raise
+    except httpx.TimeoutException as e:
+        raise AIError(f"The local model took longer than {config.OLLAMA_TIMEOUT}s and was stopped.") from e
+    except Exception as e:
+        raise AIError(f"Local model request failed: {e.__class__.__name__}: {e}") from e
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip()
+    if not text:
+        raise AIError("The local model returned an empty answer. Try again, or use Claude.")
+    return text
+
+
 def _ask_local(system: str, user: str, max_tokens: int, json_mode: bool) -> str:
+    if local_kind() == "openai":
+        return _ask_openai_compatible(system, user, max_tokens)
     body = {
-        "model": ollama_model(),
+        "model": local_model(),
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
         "stream": False,
         "think": False,  # qwen3 and other reasoning models: answer directly
@@ -247,7 +322,7 @@ def _ask_local(system: str, user: str, max_tokens: int, json_mode: bool) -> str:
         r.raise_for_status()
         data = r.json()
         text = (data.get("message") or {}).get("content", "")
-        log.info("local model %s: stopped=%s, tokens in=%s out=%s, %d chars", ollama_model(), data.get("done_reason"),
+        log.info("local model %s: stopped=%s, tokens in=%s out=%s, %d chars", local_model(), data.get("done_reason"),
                  data.get("prompt_eval_count", "?"), data.get("eval_count", "?"), len(text))
         if data.get("done_reason") == "length":
             raise AIError("The local model's answer was cut off before it finished. Try again, or use Claude.")

@@ -22,7 +22,7 @@ API_TOKEN = os.environ.get("API_TOKEN", "")
 
 # AI features (extraction from pasted text, fit score, resume, cover letter)
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-APP_VERSION = "1.16.1"  # shown in Settings and the log, to tell which build is running
+APP_VERSION = "1.17.0"  # shown in Settings and the log, to tell which build is running
 
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5-5")
 # Claude models you can pick in the app (id: name, price per million tokens in/out).
@@ -36,6 +36,18 @@ CLAUDE_MODELS = {
 # the container (Colima and Docker Desktop both provide it).
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://host.docker.internal:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:14b")
+# ollama, or openai for servers with the OpenAI chat API (LM Studio, llama.cpp, Jan, vLLM); changeable in Settings
+LOCAL_KIND = os.environ.get("LOCAL_KIND", "ollama")
+# Common Ollama models, shown in Settings with their pull command. Sizes are the download, roughly.
+RECOMMENDED_LOCAL_MODELS = [
+    {"id": "qwen3:14b", "name": "Qwen3 14B", "size": "9 GB", "note": "Good writing and instruction following. A solid default with 16 GB of memory or more."},
+    {"id": "qwen3:8b", "name": "Qwen3 8B", "size": "5 GB", "note": "Faster and lighter than 14B, a little less polished."},
+    {"id": "gemma3:12b", "name": "Gemma 3 12B", "size": "8 GB", "note": "Google's model. Natural, readable writing."},
+    {"id": "llama3.1:8b", "name": "Llama 3.1 8B", "size": "5 GB", "note": "Meta's model. Quick, fine for fit checks and reading job pages."},
+    {"id": "mistral-small3.2", "name": "Mistral Small 3.2 (24B)", "size": "15 GB", "note": "Strong writing, needs 24 GB of memory or more."},
+    {"id": "phi4", "name": "Phi-4 14B", "size": "9 GB", "note": "Microsoft's model. Careful and structured; good at following formats."},
+    {"id": "gpt-oss:20b", "name": "gpt-oss 20B", "size": "14 GB", "note": "OpenAI's open-weight model. Thinks before answering, so it's slower."},
+]
 OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "16384"))  # room for resume + job description
 OLLAMA_TIMEOUT = int(os.environ.get("OLLAMA_TIMEOUT", "900"))
 DEFAULT_ENGINE = os.environ.get("DEFAULT_ENGINE", "claude")  # claude | local

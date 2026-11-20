@@ -149,6 +149,7 @@ def run_for_user(user_id: int, trigger: str = "schedule") -> int | None:
                 db.commit()
 
             ai.use_claude_model(s.claude_model or None)  # this run's thread uses the overnight model
+            ai.use_local_model(s.local_model or None)
             try:
                 engine = ai.resolve(s.engine)
             except ai.AIError as e:

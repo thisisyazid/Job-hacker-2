@@ -45,7 +45,7 @@ Updating later: `podman compose pull && podman compose up -d`.
 
 ## Using the local model (Ollama)
 
-Set the address and model in the app: **Settings → AI models → Local model**. Type where Ollama runs, click **Check** to list the models installed there, pick one and save. `OLLAMA_URL` and `OLLAMA_MODEL` in `.env` are only the defaults (`http://host.docker.internal:11434`, which reaches the host from inside the container, and `qwen3:14b`).
+Set the address and model in the app: **Settings → AI models → Local model**. Pick **Ollama**, or **LM Studio, llama.cpp, Jan or vLLM** (any server with the OpenAI chat API). With more than one model installed, a dropdown next to "Local" switches between them wherever you use AI, and overnight runs can use a model of their own. Settings also lists common Ollama models with their pull command. Type where Ollama runs, click **Check** to list the models installed there, pick one and save. `OLLAMA_URL` and `OLLAMA_MODEL` in `.env` are only the defaults (`http://host.docker.internal:11434`, which reaches the host from inside the container, and `qwen3:14b`).
 
 - **Same machine as Job Hacker:** `http://host.docker.internal:11434` (Docker), or `http://host.containers.internal:11434` (Podman, e.g. on Bazzite).
 - **Another computer on your network** (say a gaming PC with a GPU): start Ollama there so it listens on the network (`OLLAMA_HOST=0.0.0.0`), allow port 11434 through its firewall, then use `http://that-computer's-ip:11434`.

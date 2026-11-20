@@ -46,7 +46,7 @@ def submit(user_id: int, job, kind: str, persona_id: int | None, instructions: s
             "kind": kind, "label": KINDS.get(kind, kind), "engine": ai.label(engine), "status": "queued",
             "error": "", "document_id": None, "queued_at": time.time(), "started_at": None, "finished_at": None,
             "_persona_id": persona_id, "_instructions": instructions, "_engine": engine,
-            "_claude_model": ai.claude_model(),
+            "_claude_model": ai.claude_model(), "_local_model": ai.local_model(),
         }
         _prune()
         if _worker is None or not _worker.is_alive():
@@ -113,6 +113,7 @@ def _make(t: dict) -> int:
         if not p or not p.resume_text.strip():
             raise ai.AIError("Add your base resume in Settings first.")
         ai.use_claude_model(t["_claude_model"])
+        ai.use_local_model(t["_local_model"])
         fn = ai.tailor_resume if t["kind"] == "resume" else ai.cover_letter
         text = fn(p.resume_text, job, t["_instructions"], engine=t["_engine"])
         d = Document(job_id=job.id, kind=t["kind"], content=text, persona_name=p.name, engine=ai.label(t["_engine"]))

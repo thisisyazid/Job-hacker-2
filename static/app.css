@@ -623,9 +623,9 @@ dialog.pick p strong { color: var(--ink); }
 .sheet-tools .sel-hint { margin: 0; flex: 1 1 420px; }
 .export-tools { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--muted); margin-left: auto; }
 
-.engine-model { height: 30px; margin-left: 4px; padding: 0 6px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface);
+.engine-model, .engine-lmodel { height: 30px; margin-left: 4px; padding: 0 6px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface);
   color: var(--ink); font: inherit; font-size: 14px; font-weight: 600; max-width: 100%; }
-.engine-one .engine-model { margin-left: 6px; }
+.engine-one .engine-model, .engine-one .engine-lmodel { margin-left: 6px; }
 
 .pick-remember { display: flex; align-items: center; gap: 8px; margin: -6px 0 14px; font-size: 15px; color: var(--muted); cursor: pointer; }
 .pick-remember input { width: 18px; height: 18px; accent-color: var(--accent); }
@@ -756,3 +756,13 @@ body.no-credit .credit { display: none; }
 .task-pill[hidden] { display: none; }
 .aiwait-card .btn { margin-top: 18px; }
 @media (max-width: 520px) { .task-pill span:last-child { display: none; } }
+
+/* ---------- choosing the local model ---------- */
+.engine[data-cur="local"] .engine-model, .engine[data-cur="claude"] .engine-lmodel { display: none; }
+.lm-rec { margin: 4px 0 16px; }
+.lm-rec summary { color: var(--accent); cursor: pointer; font-weight: 600; }
+.lm-rec ul { list-style: none; padding: 0; margin: 10px 0; display: grid; gap: 10px; }
+.lm-rec li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-s); background: var(--surface); }
+.lm-rec li .btn { flex: none; }
+.lm-rec code { font-size: 13px; }
+.lm-have { color: var(--fit-high); font-weight: 700; font-size: 14px; }

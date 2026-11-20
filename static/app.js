@@ -192,6 +192,8 @@ async function api(path, opts = {}) {
   const init = { credentials: "same-origin", headers: {}, ...opts };
   const cm = claudeModel();
   if (cm) init.headers["X-Claude-Model"] = cm;  // which Claude model AI actions use
+  const lm = localModel();
+  if (lm) init.headers["X-Local-Model"] = lm;  // which local model, if more than one is installed
   if (opts.json !== undefined) {
     init.method = init.method || "POST";
     init.headers["Content-Type"] = "application/json";
@@ -456,27 +458,41 @@ function bookmarklet(origin) {
 async function drawLocalModel(box, checkUrl) {
   if (!box) return;
   let m;
-  try { m = await api("/local-model" + (checkUrl ? `?url=${encodeURIComponent(checkUrl)}` : "")); }
+  const kindPick = document.getElementById("lm-kind")?.value;
+  try { m = await api("/local-model" + (checkUrl ? `?url=${encodeURIComponent(checkUrl)}&kind=${kindPick || ""}` : "")); }
   catch (e) { box.innerHTML = html`<p class="hint">${e.message}</p>`; return; }
   const url = checkUrl ?? m.url, picked = document.getElementById("lm-model")?.value || m.model;
-  const status = checkUrl ? (m.error ? m.error : `Found Ollama with ${m.models.length} model${m.models.length === 1 ? "" : "s"}. Pick one and save.`)
+  const kind = checkUrl ? m.checked_kind : m.kind, isOllama = kind === "ollama";
+  const status = checkUrl ? (m.error ? m.error : `Found ${isOllama ? "Ollama" : "the server"} with ${m.models.length} model${m.models.length === 1 ? "" : "s"}. Pick one and save.`)
     : m.ok ? `Working: ${m.model} at ${m.url}.` : (m.reason || m.error || "Not set up.");
   box.innerHTML = html`
     <p class="lm-status ${(!checkUrl && m.ok) || (checkUrl && !m.error) ? "ok" : "bad"}">${status}</p>
+    <div class="field"><label for="lm-kind">Local AI app</label>
+      <select id="lm-kind">
+        <option value="ollama" ${isOllama ? "selected" : ""}>Ollama</option>
+        <option value="openai" ${isOllama ? "" : "selected"}>LM Studio, llama.cpp, Jan or vLLM (OpenAI-compatible)</option>
+      </select></div>
     <div class="field"><label for="lm-url">Address</label>
       <div class="lm-row"><input id="lm-url" type="text" inputmode="url" autocomplete="off" spellcheck="false" value="${url}" placeholder="${m.default_url || "http://192.168.1.20:11434"}">
       <button class="btn" type="button" id="lm-check">Check</button></div>
-      <p class="hint">Where Ollama runs. Same machine as Job Hacker in Docker: <code>http://host.docker.internal:11434</code> (Podman: <code>http://host.containers.internal:11434</code>). Another computer on your network: <code>http://its-ip-address:11434</code>.</p></div>
+      <p class="hint">${isOllama
+        ? raw("Where Ollama runs. Same machine as Job Hacker in Docker: <code>http://host.docker.internal:11434</code> (Podman: <code>http://host.containers.internal:11434</code>). Another computer on your network: <code>http://its-ip-address:11434</code>.")
+        : raw("The server's address, usually ending in the port: LM Studio <code>:1234</code>, llama.cpp <code>:8080</code>, Jan <code>:1337</code>, vLLM <code>:8000</code>. From Docker on the same machine use <code>http://host.docker.internal:1234</code>. In LM Studio, turn on the server and “Serve on local network” to reach it from another computer.")}</p></div>
     <div class="field"><label for="lm-model">Model</label>
       <input id="lm-model" type="text" list="lm-models" autocomplete="off" spellcheck="false" value="${picked}" placeholder="${m.default_model || "qwen3:14b"}">
       <datalist id="lm-models">${m.models.map((x) => raw(html`<option value="${x}">`))}</datalist>
-      <p class="hint">${m.models.length ? `Installed there: ${m.models.join(", ")}.` : "Click Check to list the models installed there."} To add one, run <code>ollama pull qwen3:14b</code> on that computer.</p></div>
+      <p class="hint">${m.models.length ? `Installed there: ${m.models.join(", ")}.` : "Click Check to list the models installed there."} ${isOllama ? raw("To add one, run <code>ollama pull qwen3:14b</code> on that computer.") : "Download and load models in the app itself."} With more than one installed, you can switch between them next to “Local” wherever you use AI.</p></div>
+    ${isOllama ? raw(html`<details class="lm-rec"><summary>Common local models</summary>
+      <ul>${m.recommended.map((r) => { const have = m.models.some((x) => x === r.id || x === r.id + ":latest" || x.split(":")[0] === r.id);
+        return raw(html`<li><div><strong>${r.name}</strong> <span class="hint" style="display:inline">· ${r.size}</span>${have ? raw(' <span class="lm-have">✓ installed</span>') : ""}<br><span class="hint" style="display:inline">${r.note}</span></div>
+          ${have ? raw(html`<button class="btn btn-s" type="button" data-use-model="${r.id}">Use</button>`) : raw(html`<button class="btn btn-s" type="button" data-pull="${r.id}" title="Copy the command to download it">Copy <code>ollama pull ${r.id}</code></button>`)}</li>`); })}</ul>
+      <p class="hint">Bigger models write better but are slower and need more memory. Run the command on the computer where Ollama is, then click Check.</p></details>`) : ""}
     <div class="actions"><button class="btn btn-primary" type="button" id="lm-save">Save</button>
       ${m.url !== m.default_url || m.model !== m.default_model ? raw(html`<button class="btn btn-ghost" type="button" id="lm-reset">Use the .env defaults (${m.default_model || "none"} at ${m.default_url || "no address"})</button>`) : ""}</div>`;
   const save = async (u, mod, msg) => {
     const done = busy(document.getElementById("lm-save"), "Saving");
     try {
-      const r = await api("/local-model", { method: "PUT", json: { url: u, model: mod } });
+      const r = await api("/local-model", { method: "PUT", json: { url: u, model: mod, kind: document.getElementById("lm-kind")?.value || "" } });
       state.session = null; await loadSession();  // the model pickers read the new name
       toast(r.ok ? msg : `Saved, but the local model isn't working yet: ${r.reason || r.error}`, r.ok ? undefined : "error");
       drawLocalModel(box);
@@ -490,6 +506,12 @@ async function drawLocalModel(box, checkUrl) {
   document.getElementById("lm-save").addEventListener("click", () =>
     save(document.getElementById("lm-url").value.trim(), document.getElementById("lm-model").value.trim(), "Local model saved and working"));
   document.getElementById("lm-reset")?.addEventListener("click", () => save("", "", "Back to the .env defaults"));
+  document.getElementById("lm-kind").addEventListener("change", () => drawLocalModel(box, document.getElementById("lm-url").value.trim()));
+  box.querySelectorAll("[data-use-model]").forEach((b) => b.addEventListener("click", () => { document.getElementById("lm-model").value = b.dataset.useModel; document.getElementById("lm-save").click(); }));
+  box.querySelectorAll("[data-pull]").forEach((b) => b.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(`ollama pull ${b.dataset.pull}`); toast("Copied. Run it on the computer where Ollama is, then click Check."); }
+    catch { toast(`Run: ollama pull ${b.dataset.pull}`); }
+  }));
 }
 // The Claude model chosen in this browser ("" = the server's default).
 function claudeModels() { return engines().claude?.models || []; }
@@ -508,7 +530,21 @@ function claudeModelSelect(cls = "engine-model") {
     ${ms.map((m) => raw(html`<option value="${m.id}" ${m.id === cur ? "selected" : ""}>${m.name} · ${m.price}</option>`))}
   </select>`;
 }
-function engineName(e) { return e === "local" ? `Local (${engines().local?.model || "Ollama"})` : `Claude ${claudeModelName()}`; }
+// The local model chosen in this browser ("" = the one saved in Settings).
+function localModels() { return engines().local?.models || []; }
+function localModel() {
+  const saved = localGet("jh.localModel");
+  return saved && localModels().includes(saved) ? saved : "";
+}
+function localModelSelect() {
+  const ms = localModels();
+  if (ms.length < 2) return "";
+  const cur = localModel() || engines().local?.model;
+  return html`<select class="engine-lmodel" aria-label="Local model" title="Which local model to use (installed on your local AI server)">
+    ${ms.map((m) => raw(html`<option value="${m}" ${m === cur ? "selected" : ""}>${m}</option>`))}
+  </select>`;
+}
+function engineName(e) { return e === "local" ? `Local (${localModel() || engines().local?.model || "Ollama"})` : `Claude ${claudeModelName()}`; }
 function currentEngine() {
   const all = engines();
   const saved = localGet("jh.engine");
@@ -519,20 +555,28 @@ function enginePicker() {
   const all = engines();
   const cur = currentEngine();
   if (all.claude?.available && all.local?.available) {
-    return html`<div class="engine" role="radiogroup" aria-label="AI model">
+    return html`<div class="engine" role="radiogroup" aria-label="AI model" data-cur="${cur}">
       <span class="engine-l">Use</span>
       <button type="button" role="radio" data-engine="claude" aria-checked="${cur === "claude"}">Claude</button>
-      <button type="button" role="radio" data-engine="local" aria-checked="${cur === "local"}">Local <span class="engine-m">${all.local.model}</span></button>
+      <button type="button" role="radio" data-engine="local" aria-checked="${cur === "local"}">Local${localModels().length > 1 ? "" : raw(html` <span class="engine-m">${all.local.model}</span>`)}</button>
       ${raw(claudeModelSelect())}
+      ${raw(localModelSelect())}
     </div>`;
   }
   if (cur === "claude" && claudeModels().length > 1) return html`<p class="engine-one">Using Claude ${raw(claudeModelSelect())}</p>`;
+  if (cur === "local" && localModels().length > 1) return html`<p class="engine-one">Using local model ${raw(localModelSelect())}</p>`;
   return cur ? html`<p class="engine-one">Using ${engineName(cur)}</p>` : "";
 }
 function bindEnginePickers(root = document) {
   root.querySelectorAll(".engine [data-engine]").forEach((b) => b.addEventListener("click", () => {
     localSet("jh.engine", b.dataset.engine);
     document.querySelectorAll(".engine [data-engine]").forEach((x) => x.setAttribute("aria-checked", x.dataset.engine === b.dataset.engine));
+    document.querySelectorAll(".engine").forEach((x) => { x.dataset.cur = b.dataset.engine; });
+  }));
+  root.querySelectorAll(".engine-lmodel").forEach((sel) => sel.addEventListener("change", () => {
+    localSet("jh.localModel", sel.value);
+    document.querySelectorAll(".engine-lmodel").forEach((x) => { x.value = sel.value; });
+    toast(`${sel.value} will be used for local AI actions in this browser`);
   }));
   root.querySelectorAll(".engine-model").forEach((sel) => sel.addEventListener("change", () => {
     localSet("jh.claudeModel", sel.value);
@@ -2403,6 +2447,9 @@ async function drawNightly(box) {
           ${st.engine === "claude" && claudeModels().length > 1 ? raw(html`<select id="n-cmodel" aria-label="Claude model for overnight runs" style="margin-top:6px">
             ${claudeModels().map((m) => raw(html`<option value="${m.id}" ${m.id === (st.claude_model || engines().claude?.model) ? "selected" : ""}>Claude ${m.name} · ${m.price}</option>`))}
           </select>`) : ""}
+          ${st.engine === "local" && localModels().length > 1 ? raw(html`<select id="n-lmodel" aria-label="Local model for overnight runs" style="margin-top:6px">
+            ${localModels().map((m) => raw(html`<option value="${m}" ${m === (st.local_model || engines().local?.model) ? "selected" : ""}>${m}</option>`))}
+          </select>`) : ""}
           ${engineOk ? "" : raw(html`<p class="hint warn-text">${all[st.engine]?.reason || "Not available right now."}</p>`)}
         </div>
       </div>
@@ -2441,6 +2488,7 @@ async function drawNightly(box) {
   box.querySelector("#n-time").addEventListener("change", (e) => e.target.value && save({ run_time: e.target.value }));
   box.querySelector("#n-engine").addEventListener("change", (e) => save({ engine: e.target.value }));
   box.querySelector("#n-cmodel")?.addEventListener("change", (e) => save({ claude_model: e.target.value }));
+  box.querySelector("#n-lmodel")?.addEventListener("change", (e) => save({ local_model: e.target.value }));
   box.querySelector("#n-max").addEventListener("change", (e) => {
     const v = Math.round(Number(e.target.value));
     if (v >= 1 && v <= 2000) save({ max_jobs: v }); else { toast("Pick a number from 1 to 2000.", "error"); e.target.value = st.max_jobs; }
